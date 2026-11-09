@@ -86,6 +86,21 @@ services:
       postgres:
         condition: service_healthy
 
+  ledger:
+    build:
+      context: ..
+      args:
+        CMD: ledger
+    # Settles trades from the Kafka event log into PostgreSQL (local development credentials).
+    command: ["run", "-kafka", "kafka:19092", "-pg", "postgres://exchange:exchange-local-dev@postgres:5432/exchange?sslmode=disable"]
+    ports:
+      - "${LEDGER_PORT:-18082}:8082"
+    depends_on:
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+
 volumes:
   redis-data:
   gateway-data:

@@ -1,0 +1,10 @@
+{"time":"2026-11-09T17:15:40.754854+08:00","level":"INFO","msg":"recovered","service":"gateway","from_snapshot":false,"snapshot_seq":0,"replayed_batches":0,"replayed_events":0,"last_seq":0,"book_hash":"a8c7f832281a39c5","resting_orders":0,"log_end_offset":0,"snapshot_load_ms":1,"replay_ms":0,"total_ms":22}
+{"time":"2026-11-09T17:15:40.758523+08:00","level":"INFO","msg":"pre-trade risk enabled","service":"gateway","redis":"localhost:6390","max_qty":1000000,"max_price":1000000,"max_open":100000,"rate_per_sec":1000000,"burst":1000000}
+{"time":"2026-11-09T17:15:40.786459+08:00","level":"INFO","msg":"http listening","service":"gateway","addr":":18071"}
+{"time":"2026-11-09T17:15:40.786508+08:00","level":"INFO","msg":"grpc listening","service":"gateway","addr":"[::]:50071","symbol":"LT20261109T091410ZR3-USD"}
+{"time":"2026-11-09T17:15:48.750771+08:00","level":"INFO","msg":"snapshot written","service":"gateway","seq":100000,"offset":75531,"orders":539}
+{"time":"2026-11-09T17:15:56.446682+08:00","level":"INFO","msg":"snapshot written","service":"gateway","seq":200000,"offset":151113,"orders":593}
+{"time":"2026-11-09T17:16:04.196983+08:00","level":"INFO","msg":"snapshot written","service":"gateway","seq":300001,"offset":227122,"orders":803}
+{"time":"2026-11-09T17:16:11.921133+08:00","level":"INFO","msg":"snapshot written","service":"gateway","seq":400001,"offset":302891,"orders":845}
+{"time":"2026-11-09T17:16:16.103886+08:00","level":"INFO","msg":"shutting down","service":"gateway"}
+{"time":"2026-11-09T17:16:16.112209+08:00","level":"INFO","msg":"snapshot written","service":"gateway","seq":453415,"offset":343492,"orders":887}

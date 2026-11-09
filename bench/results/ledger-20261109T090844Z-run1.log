@@ -1,0 +1,2 @@
+{"time":"2026-11-09T17:08:51.036542+08:00","level":"INFO","msg":"ledger running","service":"ledger","symbol":"LT20261109T090844ZR1-USD","group":"g-LT20261109T090844ZR1-USD","http":":18072","taker_bps":0,"maker_bps":0}
+{"time":"2026-11-09T17:10:16.339856+08:00","level":"INFO","msg":"shutting down","service":"ledger"}

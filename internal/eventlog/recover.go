@@ -167,3 +167,84 @@ func replayRange(ctx context.Context, brokers []string, topic, symbol string, bo
 	st.Replay = time.Since(t)
 	return applyErr
 }
+
+// Scan reads the whole event log of a symbol from its first record up to the
+// end observed when Scan starts, calling fn with every record's offset and
+// decoded events in log order. It validates each batch (schema version,
+// symbol, contiguity inside the batch) and returns an error on a record it
+// cannot decode, so callers that must tolerate bad records should not use it.
+// A missing topic is an empty log.
+func Scan(ctx context.Context, brokers []string, symbol string, fn func(offset int64, evs []engine.Event) error) error {
+	topic := Topic(symbol)
+	adm, err := kgo.NewClient(kgo.SeedBrokers(brokers...))
+	if err != nil {
+		return err
+	}
+	ka := kadm.NewClient(adm)
+	starts, err := ka.ListStartOffsets(ctx, topic)
+	if err == nil {
+		err = starts.Error()
+	}
+	var ends kadm.ListedOffsets
+	if err == nil {
+		ends, err = ka.ListEndOffsets(ctx, topic)
+		if err == nil {
+			err = ends.Error()
+		}
+	}
+	adm.Close()
+	if err != nil {
+		if errors.Is(err, kerr.UnknownTopicOrPartition) {
+			return nil
+		}
+		return fmt.Errorf("list offsets for %s: %w", topic, err)
+	}
+	so, _ := starts.Lookup(topic, 0)
+	eo, _ := ends.Lookup(topic, 0)
+	if so.Offset >= eo.Offset {
+		return nil
+	}
+
+	cl, err := kgo.NewClient(
+		kgo.SeedBrokers(brokers...),
+		kgo.ConsumePartitions(map[string]map[int32]kgo.Offset{topic: {0: kgo.NewOffset().At(so.Offset)}}),
+		kgo.FetchMaxBytes(64<<20), kgo.FetchMaxPartitionBytes(32<<20),
+	)
+	if err != nil {
+		return err
+	}
+	defer cl.Close()
+
+	last := so.Offset - 1
+	var scanErr error
+	for last < eo.Offset-1 && scanErr == nil {
+		fetches := cl.PollFetches(ctx)
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if errs := fetches.Errors(); len(errs) > 0 {
+			return fmt.Errorf("fetch %s: %w", topic, errs[0].Err)
+		}
+		fetches.EachRecord(func(r *kgo.Record) {
+			if scanErr != nil || r.Offset >= eo.Offset {
+				return
+			}
+			var b exchangev1.EventBatch
+			if err := proto.Unmarshal(r.Value, &b); err != nil {
+				scanErr = fmt.Errorf("offset %d: %w", r.Offset, err)
+				return
+			}
+			evs, err := FromProtoBatch(&b, symbol)
+			if err != nil {
+				scanErr = fmt.Errorf("offset %d: %w", r.Offset, err)
+				return
+			}
+			if err := fn(r.Offset, evs); err != nil {
+				scanErr = err
+				return
+			}
+			last = r.Offset
+		})
+	}
+	return scanErr
+}

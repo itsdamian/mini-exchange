@@ -226,3 +226,34 @@ Commit: the working tree that became the phase 4 commit (the recorded hash in th
 - Lua unit tests: reserve holds the right amount and rejects underfunded, oversize, too-many-open and rate-limited orders (token bucket with an injected clock: burst, per-account isolation, refill, cap at the burst after a long pause); settlement lifecycle (price improvement released, partial fills, cancel, reject, duplicate delivery of the same event applied once); values near the 2^52 bound stay exact through Lua's doubles.
 - End to end through the real gateway and pipeline (`TestRiskConservationEndToEnd`): 3,000 random orders (limit, IOC, market, cancels) over 8 accounts: never a negative balance, base and quote exactly conserved, nothing left held and no open reservation once everything is cancelled.
 - Redis stopped and restarted under the gateway: `UNAVAILABLE` while it is down, and orders trade and settle correctly after it returns, including Redis having lost its script cache.
+
+## Phase 5: double-entry ledger in PostgreSQL
+
+Setup: same laptop as phase 4 (Apple M5, 10 logical CPUs), `GOMAXPROCS=4`, native Redis 8.10.1 on port 6390 without persistence, Kafka `apache/kafka:3.9.0` and PostgreSQL `postgres:17-alpine` from the compose file **through Docker Desktop** (a VM plus port forwarding, like the Docker Redis of phase 4). Gateway, load generator, ledger consumer and the reconciliation all run on this one machine, 10,000 orders/s for 30 s after a 5 s warm-up, 3 runs, `scripts/loadtest.sh` with `KAFKA=… REDIS=… PG=1` (each run: fresh topic, fresh Redis balances, truncated ledger, 16 accounts funded identically in Redis and the ledger). Fees are 0. Raw files: `bench/results/*risk-ledger-v1*` and `*risk-ledger-v2*`.
+
+### 5.1 Results (every run)
+
+| Setup | Run | p50 µs | p99 µs | p99.9 µs | Trades settled | Mean ledger lag | Ledger caught up after the load stopped | Reconciliation |
+|---|---|---|---|---|---|---|---|---|
+| v1: one transaction per log record | 1 | 296 | 6,275 | 19,311 | 99,124 | 31.3 s | 49.9 s | 0 discrepancies |
+| v1 | 2 | 292 | 4,619 | 30,831 | 99,228 | 30.7 s | 49.0 s | 0 |
+| v1 | 3 | 284 | 5,203 | 38,367 | 99,289 | 30.0 s | 48.6 s | 0 |
+| v2: records of one poll share a transaction (up to 256) | 1 | 293 | 4,207 | 13,815 | 99,199 | 3.9 s | 5.0 s | 0 |
+| v2 | 2 | 305 | 7,151 | 20,207 | 99,257 | 4.6 s | 6.2 s | 0 |
+| v2 | 3 | 316 | 5,399 | 15,959 | 99,178 | 5.2 s | 7.1 s | 0 |
+
+"Mean ledger lag" is the mean of `mx_ledger_settle_lag_seconds` (engine event to commit in PostgreSQL), taken as sum over count of the histogram. "Caught up" is the elapsed time of the reconciliation, which re-checks every 0.5 s until clean; each attempt also re-reads the whole log, so it is an upper bound with up to 0.5 s of polling and a log scan added.
+
+### 5.2 What these numbers say, and what they do not
+- **The ledger is not in the order path**: the engine and the gateway never wait for PostgreSQL, and a database outage does not stop trading (tested). The gateway latency in this table (p50 284 to 316 µs) is higher than phase 4's with risk and Kafka (163 to 175 µs, native Redis, 4 of 10 cores); here the machine also runs PostgreSQL in Docker, the ledger consumer and (after the load) the reconciliation. I did not run a controlled A/B to separate those causes, so I do not claim the ledger costs the gateway nothing, only that it is not waited for.
+- **Lag is the open problem.** v1 settled one log record per database transaction and fell behind from the start: about 31 s mean lag and 49 s to catch up after 30 s of load. Grouping the records of a poll into one transaction cut that to 4 to 5 s mean and 5 to 7 s to catch up, about 7 times better. It is still seconds, not milliseconds, behind a 10,000 orders/s flow (about 3,300 trades/s). I have not profiled where the time goes (PostgreSQL through Docker Desktop, the per-trade `apply_posting` statements, Kafka fetch size) so I cannot say which would help next; that belongs to phase 8. The engine does not depend on it, but anything that needs the ledger to be current (reconciliation) must wait.
+- **Correctness held in every run**: 6 of 6 reconciliations against the event log and against Redis reported zero discrepancies, and every trade in the log has exactly one settlement (99,124 to 99,289 per run).
+- These are single runs on a laptop, three per row, not a statistical claim; I did not establish whether the p99 and p99.9 differences between v1 and v2 are more than run-to-run noise.
+
+### 5.3 Correctness checks (FR-6), against real PostgreSQL, Kafka and Redis
+- **Replay**: applying the same 2,000 random trades twice leaves identical balances, with fees (`TestApplyingTheSameTradesTwiceYieldsIdenticalBalances`). Replaying a 5,000-command log from offset 0 with a new consumer group into the same ledger settles nothing again (every trade counted as a duplicate), and into a brand-new ledger funded the same way gives identical balances (`TestReplayFromTheBeginningYieldsIdenticalBalances`).
+- **Poison isolation**: a log with undecodable bytes, a batch of another symbol, an unknown schema version, a trade for an unfunded account and a zero-quantity trade, all in the middle of valid records, ends with 5 records in the dead-letter topic with their reasons and every valid trade settled (`TestPoisonRecordsGoToTheDeadLetterTopicAndDoNotBlock`).
+- **Chaos**: PostgreSQL stopped while orders keep flowing through the real gRPC gateway, Redis risk, engine and Kafka, restarted after the consumer provably hit the outage; the reconciliation against the log and against Redis (with 2 and 1 bps fees) reports zero discrepancies (`TestWholePathWithPostgresOutageReconcilesToZero`). A PostgreSQL stop and restart under a replayed log loses and duplicates nothing (`TestPostgresOutageLosesAndDuplicatesNothing`).
+- **The reconciliation detects problems**: an edited balance, a deleted settlement and an orphan settlement each produce the expected discrepancy kinds, and are gone when restored (`TestReconcileFindsCorruption`).
+- **Invariants** (entries sum to zero per asset, no negative customer balance, one settlement per trade) are enforced by the schema and re-checked by every reconciliation; the posting builder is also property tested to balance for any price, quantity and fee.
+

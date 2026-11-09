@@ -55,5 +55,22 @@ Reset before running against a new event log: the settlement dedup remembers the
 
 The hermetic tests (`go test ./internal/risk ./internal/gateway`, not under `-short`) run against a Redis started by Testcontainers, including stopping and restarting it.
 
-## Reconciliation
-Arrives with the ledger (phase 5).
+## Ledger and reconciliation (PostgreSQL)
+```bash
+docker compose -f deploy/docker-compose.yml up -d --wait kafka postgres
+go run ./cmd/ledger deposit -symbol BTC-USD -account 1 -to 16 -base 1000000 -quote 1000000000   # fund the ledger like Redis (idempotent with -ref)
+go run ./cmd/ledger run -kafka localhost:9092 -symbol BTC-USD                                   # settle trades; metrics on :8082
+go run ./cmd/ledger reconcile -kafka localhost:9092 -symbol BTC-USD -redis localhost:16379 -wait 60s
+KAFKA=localhost:9092 REDIS=localhost:16379 PG=1 scripts/loadtest.sh                              # load + ledger + reconcile per run
+```
+`-pg` is the connection string (default is the compose database). The fee flags `-taker-bps` and `-maker-bps` must be the same for `run` and `reconcile`. Migrations run when the binary starts.
+
+`reconcile` prints a JSON report and exits 1 on any discrepancy. Kinds: `missing_settlement` (a logged trade has no settlement: look in the dead-letter topic), `orphan_settlement`, `balance_vs_log`, `balance_vs_entries`, `unbalanced_event`, `empty_settlement`, `asset_not_zero`, `negative_balance`, `balance_vs_redis`, `redis_negative`, `log_gap`, `log_invalid_trade`. Run it when the system is quiet and the gateway was stopped with SIGTERM (drains the Redis settlement queue); `-wait` covers the ledger catching up. It re-reads the whole log each attempt.
+
+Replay: to rebuild or verify, start `ledger run` with a **new** `-group`; the whole log is read again and every already-settled trade is skipped (`mx_ledger_trades_duplicate_total`). To rebuild from nothing, truncate `entries, settlements, accounts`, redo the deposits, and run with a new group.
+
+Dead letters: `mx.events.<symbol>.dlq` holds the original record bytes with headers `reason`, `source-topic`, `source-partition`, `source-offset`. Inspect with any Kafka console consumer printing headers. A dead letter is never retried automatically.
+
+Metrics (ledger, `:8082/metrics`): `mx_ledger_settle_lag_seconds`, `mx_ledger_trades_settled_total`, `mx_ledger_trades_duplicate_total`, `mx_ledger_records_total`, `mx_ledger_retries_total` (database or offset commit trouble, alert if it keeps growing), `mx_ledger_dead_letter_total{reason}` (alert on any), `mx_ledger_last_settle_timestamp_seconds`.
+
+The tests (`go test ./internal/ledger`, not under `-short`) start PostgreSQL, Kafka and Redis with Testcontainers, including stopping PostgreSQL mid-load.

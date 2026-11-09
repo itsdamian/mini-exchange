@@ -1,0 +1,11 @@
+{
+  "symbol": "LT20261109T091410ZR3-USD",
+  "log_events": 453415,
+  "log_trades": 99178,
+  "ledger_trades": 99178,
+  "customer_accounts": 16,
+  "redis_accounts_checked": 16,
+  "attempts": 7,
+  "elapsed_ns": 7121304000,
+  "discrepancies": []
+}

@@ -9,6 +9,9 @@
 #        REDIS=localhost:16379 scripts/loadtest.sh  with pre-trade risk in the path (Redis balances are funded
 #                                                   first and audited after each run: funds must be conserved)
 #                                                   (start Redis first: docker compose -f deploy/docker-compose.yml up -d --wait redis)
+#        KAFKA=... REDIS=... PG=1 scripts/loadtest.sh  also run the ledger consumer into the compose PostgreSQL
+#                                                   (PG=<dsn> to use another one), then reconcile the ledger
+#                                                   with the event log and Redis after each run (needs both above)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -27,23 +30,32 @@ mkdir -p bin "$OUT"
 go build -o bin/gateway ./cmd/gateway
 go build -o bin/loadgen ./cmd/loadgen
 go build -o bin/risktool ./cmd/risktool
+go build -o bin/ledger ./cmd/ledger
 
-GW_PID=""
-cleanup() { [ -n "$GW_PID" ] && kill "$GW_PID" 2>/dev/null || true; }
+GW_PID=""; LEDGER_PID=""
+cleanup() { [ -n "$GW_PID" ] && kill "$GW_PID" 2>/dev/null || true; [ -n "$LEDGER_PID" ] && kill "$LEDGER_PID" 2>/dev/null || true; }
 trap cleanup EXIT
 
 KAFKA="${KAFKA:-}"
 REDIS="${REDIS:-}"
+PG="${PG:-}"
+PG_HTTP_PORT="${PG_HTTP_PORT:-18072}"
+if [ -n "$PG" ]; then
+  [ -n "$KAFKA" ] && [ -n "$REDIS" ] || { echo "PG needs KAFKA and REDIS" >&2; exit 2; }
+  [ "$PG" = "1" ] && PG="postgres://exchange:exchange-local-dev@localhost:15432/exchange?sslmode=disable"
+fi
 # Per account, generous enough that funds never run out: the test measures the
 # cost of the risk check, not rejections. 16 accounts match the load generator.
 ACCOUNTS=16; FUND_BASE=1000000000; FUND_QUOTE=1000000000000
 LABEL="$([ -n "$KAFKA" ] && echo kafka || echo nolog)"
 [ -n "$REDIS" ] && LABEL="${LABEL}+risk"
+[ -n "$PG" ] && LABEL="${LABEL}+ledger"
 TAG="${TAG:-$LABEL}"
 for run in $(seq 1 "$RUNS"); do
   SYMBOL="BTC-USD"; GW_ARGS=()
   if [ -n "$KAFKA" ]; then
     SYMBOL="LT-${STAMP}-${run}"                       # fresh log per run
+    [ -n "$PG" ] && SYMBOL="LT${STAMP}R${run}-USD"      # the ledger needs BASE-QUOTE
     GW_ARGS=(-kafka "$KAFKA" -data-dir "$(mktemp -d)")
   fi
   if [ -n "$REDIS" ]; then
@@ -53,10 +65,20 @@ for run in $(seq 1 "$RUNS"); do
     # A rate limit high enough not to interfere; the limits themselves are tested separately.
     GW_ARGS+=(-redis "$REDIS" -risk-rate 1000000 -risk-burst 1000000 -risk-max-open 100000)
   fi
+  if [ -n "$PG" ]; then
+    # Fresh ledger for every run, funded like Redis (compose PostgreSQL: wipe through psql in the container).
+    docker compose -f deploy/docker-compose.yml exec -T postgres psql -U exchange -d exchange -q \
+      -c "TRUNCATE entries, settlements, accounts" >/dev/null 2>&1 || true
+    ./bin/ledger deposit -pg "$PG" -symbol "$SYMBOL" -account 1 -to "$ACCOUNTS" -base "$FUND_BASE" -quote "$FUND_QUOTE" -ref "lt-${STAMP}-${run}" >/dev/null
+  fi
   ./bin/gateway -grpc ":${GRPC_PORT}" -http ":${HTTP_PORT}" -symbol "$SYMBOL" ${GW_ARGS[@]+"${GW_ARGS[@]}"} >"$OUT/gateway-${STAMP}-run${run}.log" 2>&1 &
   GW_PID=$!
   for _ in $(seq 1 50); do curl -fsS "localhost:${HTTP_PORT}/healthz" >/dev/null 2>&1 && break; sleep 0.1; done
 
+  if [ -n "$PG" ]; then
+    ./bin/ledger run -pg "$PG" -kafka "$KAFKA" -symbol "$SYMBOL" -group "g-${SYMBOL}" -http ":${PG_HTTP_PORT}" >"$OUT/ledger-${STAMP}-run${run}.log" 2>&1 &
+    LEDGER_PID=$!
+  fi
   echo "== run ${run}/${RUNS}: ${RATE} req/s, ${DURATION} measured =="
   ./bin/loadgen -addr "localhost:${GRPC_PORT}" -symbol "$SYMBOL" -rate "$RATE" -duration "$DURATION" -warmup "$WARMUP" -conns "$CONNS" \
     -note "gateway and loadgen on the same host over loopback; event log: ${KAFKA:-none}" \
@@ -65,6 +87,13 @@ for run in $(seq 1 "$RUNS"); do
   curl -fsS "localhost:${HTTP_PORT}/metrics" | grep -E '^(mx_|go_gc_duration_seconds)' \
     >"$OUT/gateway-metrics-${TAG}-${RATE}rps-${STAMP}-${COMMIT}-run${run}.txt" || true
   kill "$GW_PID"; wait "$GW_PID" 2>/dev/null || true; GW_PID=""   # SIGTERM drains the settlement queue
+  if [ -n "$PG" ]; then
+    # The gateway has flushed the log; give the ledger time to catch up, then compare
+    # the ledger with the event log and Redis. Non-zero exit (set -e) on any discrepancy.
+    ./bin/ledger reconcile -pg "$PG" -kafka "$KAFKA" -symbol "$SYMBOL" -redis "$REDIS" -wait 120s | tee "$OUT/reconcile-${TAG}-${RATE}rps-${STAMP}-${COMMIT}-run${run}.json"
+    curl -fsS "localhost:${PG_HTTP_PORT}/metrics" | grep -E '^mx_ledger_' >"$OUT/ledger-metrics-${TAG}-${RATE}rps-${STAMP}-${COMMIT}-run${run}.txt" || true
+    kill "$LEDGER_PID"; wait "$LEDGER_PID" 2>/dev/null || true; LEDGER_PID=""
+  fi
   if [ -n "$REDIS" ]; then
     ./bin/risktool audit -redis "$REDIS" -expect-base $((ACCOUNTS * FUND_BASE)) -expect-quote $((ACCOUNTS * FUND_QUOTE)) | tee "$OUT/risk-audit-${TAG}-${RATE}rps-${STAMP}-${COMMIT}-run${run}.txt"
   fi
