@@ -1,0 +1,45 @@
+{
+  "timestamp": "2026-11-09T07:11:44Z",
+  "commit": "a034041-dirty",
+  "hardware": "Apple M5 (10 logical CPUs)",
+  "os": "darwin/arm64",
+  "go_version": "go1.27.3",
+  "gomaxprocs": 10,
+  "gogc": "100 (default)",
+  "gomemlimit": "unset",
+  "note": "gateway and loadgen on the same host over loopback; event log: none",
+  "target": "localhost:50071",
+  "rate_per_sec": 10000,
+  "measured_seconds": 30,
+  "warmup_seconds": 5,
+  "grpc_connections": 4,
+  "seed": 7,
+  "measured_requests": 300000,
+  "completed": 300000,
+  "errors_by_grpc_code": {
+    "Unavailable": 23174
+  },
+  "outcomes": {
+    "cancel_ORDER_STATUS_CANCELED": 66685,
+    "cancel_ORDER_STATUS_REJECTED_REJECT_REASON_UNKNOWN_ORDER": 36266,
+    "place_ORDER_STATUS_ACCEPTED": 171575,
+    "place_ORDER_STATUS_REJECTED_REJECT_REASON_INVALID_PRICE": 762,
+    "place_ORDER_STATUS_REJECTED_REJECT_REASON_INVALID_QUANTITY": 1538
+  },
+  "achieved_completions_per_sec": 9976.640098934387,
+  "latency_us_from_intended_send_time": {
+    "P50": 3623,
+    "P90": 109119,
+    "P99": 154879,
+    "P999": 219007,
+    "Max": 302335
+  },
+  "scheduler_lag_us": {
+    "P50": 1,
+    "P90": 189,
+    "P99": 4143,
+    "P999": 16991,
+    "Max": 35263
+  },
+  "latency_distribution_file": "bench/results/gateway-nolog+risk-10000rps-20261109T071105Z-a034041-run1.json.hgrm"
+}

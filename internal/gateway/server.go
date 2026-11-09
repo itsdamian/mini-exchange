@@ -16,9 +16,22 @@ import (
 
 	"github.com/itsdamian/mini-exchange/internal/engine"
 	"github.com/itsdamian/mini-exchange/internal/pipeline"
+	"github.com/itsdamian/mini-exchange/internal/risk"
 
 	exchangev1 "github.com/itsdamian/mini-exchange/gen/exchange/v1"
 )
+
+// Risk is the pre-trade risk check the gateway calls before the engine.
+// *risk.Checker implements it.
+type Risk interface {
+	// Reserve holds the order's funds or returns a typed reject reason. A
+	// non-nil error means the check could not be made (the order is refused).
+	Reserve(ctx context.Context, r risk.Request) (risk.Reason, error)
+	// Release gives back a reservation for an order that never reached the engine.
+	Release(ctx context.Context, account uint64, client string) error
+	// Backlogged reports that settlement is too far behind to admit new orders.
+	Backlogged() bool
+}
 
 // Server implements exchangev1.OrderGatewayServiceServer for one symbol.
 type Server struct {
@@ -29,6 +42,7 @@ type Server struct {
 	places  *onceStore[*exchangev1.PlaceOrderResponse]
 	cancels *onceStore[*exchangev1.CancelOrderResponse]
 	latency *prometheus.HistogramVec
+	risk    Risk // nil: no pre-trade risk
 }
 
 // New returns a Server. reg may be nil.
@@ -48,6 +62,9 @@ func New(symbol string, p *pipeline.Pipeline, reg prometheus.Registerer) *Server
 		}, []string{"rpc", "code"}),
 	}
 }
+
+// WithRisk enables pre-trade risk. Call it before serving.
+func (s *Server) WithRisk(r Risk) *Server { s.risk = r; return s }
 
 // Register adds the service to a gRPC server.
 func (s *Server) Register(g grpc.ServiceRegistrar) {
@@ -113,8 +130,27 @@ func (s *Server) PlaceOrder(ctx context.Context, req *exchangev1.PlaceOrderReque
 	// The first caller executes. The engine is detached from this caller's
 	// cancellation: once enqueued the order will run, and the outcome must be
 	// recorded so a retry returns it instead of hanging.
+	reserved := false
+	if s.risk != nil {
+		resp, perr := s.reserve(ctx, req, cmd)
+		if perr != nil || resp != nil {
+			// Neither is cached: no order exists, so a retry with the same key is
+			// evaluated afresh (a rate-limited or underfunded client may succeed
+			// later) and still can never create a second order.
+			s.places.finish(k, c, resp, perr, true)
+			if perr != nil {
+				return nil, perr
+			}
+			return proto.Clone(resp).(*exchangev1.PlaceOrderResponse), nil
+		}
+		reserved = true
+	}
+
 	ev, err := s.p.Submit(context.WithoutCancel(ctx), cmd, req.GetClientOrderId())
 	if err != nil {
+		if reserved {
+			s.release(req)
+		}
 		perr := pipelineErr(err)
 		s.places.finish(k, c, nil, perr, transient(err))
 		return nil, perr
@@ -215,4 +251,37 @@ func (s *Server) StreamExecutionReports(req *exchangev1.StreamExecutionReportsRe
 			}
 		}
 	}
+}
+
+// reserve runs the pre-trade check. It returns a rejection response, or a
+// transport error, or neither when the funds are held and the order may go to
+// the engine.
+func (s *Server) reserve(ctx context.Context, req *exchangev1.PlaceOrderRequest, cmd engine.Command) (*exchangev1.PlaceOrderResponse, error) {
+	if s.risk.Backlogged() {
+		return nil, status.Error(codes.ResourceExhausted, "risk settlement backed up, retry later")
+	}
+	reason, err := s.risk.Reserve(ctx, risk.Request{
+		Account: cmd.AccountID, Client: req.GetClientOrderId(), Side: cmd.Side, Type: cmd.Type, Price: cmd.Price, Qty: cmd.Qty,
+	})
+	if err != nil {
+		// Fail closed: without Redis there is no safe way to admit an order.
+		return nil, status.Error(codes.Unavailable, "pre-trade risk check unavailable, retry later")
+	}
+	if reason == risk.OK {
+		return nil, nil
+	}
+	return &exchangev1.PlaceOrderResponse{
+		ClientOrderId: req.GetClientOrderId(),
+		Status:        exchangev1.OrderStatus_ORDER_STATUS_REJECTED,
+		RejectReason:  fromRiskReason(reason),
+	}, nil
+}
+
+// release returns the reservation of an order that was refused before the
+// engine saw it. If Redis cannot be reached the funds stay held until
+// reconciliation; that is logged by the caller's metrics, not hidden.
+func (s *Server) release(req *exchangev1.PlaceOrderRequest) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	_ = s.risk.Release(ctx, req.GetAccountId(), req.GetClientOrderId())
 }

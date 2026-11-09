@@ -189,3 +189,40 @@ The same two failure modes are also asserted hermetically in `go test ./internal
 - The crash tests prove consistency of the recovered state with the log. They do **not** make client acknowledgements durable: an order acknowledged to a client in the last tens of milliseconds before a crash can be missing after recovery (ADR 0007).
 - Idempotency records and report subscriptions are not recovered (ADR 0007), so after a restart pre-crash orders cannot be cancelled through the gateway by `client_order_id`.
 - Snapshot cost for a large book (millions of resting orders) and replay of a log with many more orders are not measured.
+
+## Phase 4: pre-trade risk in Redis
+
+Same laptop as above (Apple M5, 4 performance + 6 efficiency cores = 10 logical CPUs, darwin/arm64, go1.27.3, default GOGC). Method as phase 2: open-loop, 10,000 orders/s, 5 s warm-up, 30 s measured, fresh gateway each run, **gateway, load generator and Redis on the same host**. Each run funds 16 accounts generously (so the test measures the cost of the check, not rejections), clears their risk keys first, and afterwards runs `risktool audit`: no negative balance and available plus held equal to exactly the funded total, for both assets. **All 15 audited runs below passed the audit** (the baseline has no Redis, so nothing to audit). The limits are set high so they do not interfere (`-risk-rate 1000000`); the limits themselves are covered by tests.
+
+Two Redis setups were used. "Docker Redis" is `redis:7-alpine` from the compose file, reached through Docker Desktop's port forwarding. "Native Redis" is Homebrew `redis-server` 8.10.1 on the host, no persistence. Docker Desktop adds a VM and a proxy: `redis-benchmark` on this machine gave about 7.4k PING/s on one connection and about 50k/s on 50 connections through Docker.
+
+Commit: the working tree that became the phase 4 commit (the recorded hash in the JSON is the parent, `a034041-dirty`). Raw results: `bench/results/gateway-*risk*-10000rps-*.json` (+ `.hgrm`), `gateway-metrics-*.txt`, `risk-audit-*.txt`. Reproduce: `REDIS=localhost:16379 scripts/loadtest.sh` (`KAFKA=...` adds the event log; `GOMAXPROCS=4` as below).
+
+### 4.1 Results (3 runs each; every run's numbers, not averages)
+
+| Setup | GOMAXPROCS | p50 µs | p99 µs | p99.9 µs | max µs | refused (`UNAVAILABLE`) of 300k |
+|---|---|---|---|---|---|---|
+| Baseline: no risk, no log (phase 2 code path) | 4 | 78 / 81 / 90 | 508 / 725 / 17,135 | 9.8k / 7.2k / 143k | 21k / 19k / 178k | 0 / 0 / 0 |
+| Risk, native Redis, no log | 4 | 152 / 155 / 165 | 1,245 / 3,657 / 15,487 | 7.8k / 90.8k / 60.3k | 27k / 129k / 84k | 0 / 0 / 0 |
+| Risk, native Redis, **with Kafka log** | 4 | 163 / 175 / 173 | 1,523 / 33,535 / 15,087 | 5.9k / 104k / 107k | 13k / 130k / 157k | 0 / 131 / 0 |
+| Risk, native Redis, no log | 10 | 180 / 203 / 173 | 10,687 / 157,311 / 29,055 | 89k / 271k / 87k | 116k / 386k / 110k | 0 / 3,178 / 0 |
+| Risk, Docker Redis, per-op settlement (first version) | 10 | 3,623 / 747 / 639 | 154,879 / 135,551 / 131,967 | 219k / 201k / 270k | 302k / 393k / 355k | 23,174 / 10,988 / 3,259 |
+| Risk, Docker Redis, per-account settlement | 10 | 527 / 558 / 519 | 35,295 / 141,695 / 76,543 | 71k / 320k / 132k | 91k / 483k / 252k | 0 / 5,180 / 914 |
+
+(Order of the three numbers in a cell is run 1 / 2 / 3. The Docker per-op rows are the first version of the settler, kept as the "before" of the optimisation described in ADR 0009.)
+
+### 4.2 What these numbers say, and what they do not
+
+- **The median cost of the check is about one Redis round trip.** With native Redis and the same settings, p50 goes from 78 to 90 µs (no risk) to 152 to 165 µs (risk): about 75 to 85 µs added, with Kafka about 90 µs. Through Docker Desktop the same check costs about 450 µs more. The p50 target (under 1 ms) is met in every setup except the first Docker run of the first version.
+- **The tail is not under control, and I have not found the cause.** The p99 target (under 5 ms) was met in 2 of 3 runs of the no-risk baseline, 2 of 3 runs with risk and native Redis, and 1 of 3 with Kafka as well; one baseline run without any Redis has p99 17 ms. So a large part of the tail is present without Redis. It is much worse with Redis on the Docker path or with `GOMAXPROCS=10`.
+- **Evidence that Redis itself stalls, from Redis's own slowlog** (native Redis, `GOMAXPROCS=10`): 86 commands took more than 5 ms *inside Redis*, up to 123 ms, and the slowlog also lists single-key O(1) commands run by the scripts, such as an `HSET` (51 ms) and a plain `GET` (21 ms), not only whole scripts. With the same setup and `GOMAXPROCS=4` it was 14 commands, maximum 32 ms, and no refused orders. My working hypothesis is CPU oversubscription: the gateway's engine and dispatcher goroutines spin-wait, the load generator spins too, and with 6 of the 10 cores being efficiency cores the Redis thread is sometimes not scheduled for tens of milliseconds. That is one A/B experiment on one machine, not a proof; thread pinning and spin tuning belong to phase 8 together with the older unexplained p99.9/max in phases 2 and 3.
+- **Fail-closed shows up as measurable refusals.** When Redis does not answer within the 100 ms timeout the order is refused with `UNAVAILABLE` (nothing admitted). That happened in 7 of the 15 risk runs, up to 7.7% of orders in the worst case, and in none of the baseline runs. These are not matching-engine failures; they are the safety behaviour working while the host is overloaded. A deployment would size Redis and the host so this does not happen at the target rate; I have not shown a setup on this laptop where it never happens across repeated runs.
+- **Cost inside Redis** (`INFO commandstats`): about 14 µs of Redis time per script call on native Redis (11.6 µs with `GOMAXPROCS=4`) and about 28 to 35 µs through Docker. At the first version's 22k calls/s that was already about 60% of the single Redis thread on Docker.
+- **Settlement keeps up.** In the two Docker runs whose metrics I examined (batched settlement) the queue was empty at the end and the mean time from engine event to applied in Redis was 3.0 and 5.0 ms; across all 15 load runs `mx_risk_settle_dropped_total` was 0 and `mx_risk_settle_anomalies_total` was never incremented (no op found a missing or too-small reservation).
+
+### 4.3 Correctness checks (FR-3), against a real Redis
+
+- `TestConcurrentReservationsNeverOverdraw`: 400 goroutines reserve against a balance that fits exactly 100 orders; exactly 100 succeed, and a sampler asserts throughout that available is never negative and available plus held always equals the deposit.
+- Lua unit tests: reserve holds the right amount and rejects underfunded, oversize, too-many-open and rate-limited orders (token bucket with an injected clock: burst, per-account isolation, refill, cap at the burst after a long pause); settlement lifecycle (price improvement released, partial fills, cancel, reject, duplicate delivery of the same event applied once); values near the 2^52 bound stay exact through Lua's doubles.
+- End to end through the real gateway and pipeline (`TestRiskConservationEndToEnd`): 3,000 random orders (limit, IOC, market, cancels) over 8 accounts: never a negative balance, base and quote exactly conserved, nothing left held and no open reservation once everything is cancelled.
+- Redis stopped and restarted under the gateway: `UNAVAILABLE` while it is down, and orders trade and settle correctly after it returns, including Redis having lost its script cache.

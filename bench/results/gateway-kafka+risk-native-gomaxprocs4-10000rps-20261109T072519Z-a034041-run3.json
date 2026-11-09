@@ -1,0 +1,43 @@
+{
+  "timestamp": "2026-11-09T07:27:07Z",
+  "commit": "a034041-dirty",
+  "hardware": "Apple M5 (10 logical CPUs)",
+  "os": "darwin/arm64",
+  "go_version": "go1.27.3",
+  "gomaxprocs": 4,
+  "gogc": "100 (default)",
+  "gomemlimit": "unset",
+  "note": "gateway and loadgen on the same host over loopback; event log: localhost:9092",
+  "target": "localhost:50071",
+  "rate_per_sec": 10000,
+  "measured_seconds": 30,
+  "warmup_seconds": 5,
+  "grpc_connections": 4,
+  "seed": 7,
+  "measured_requests": 300000,
+  "completed": 300000,
+  "errors_by_grpc_code": {},
+  "outcomes": {
+    "cancel_ORDER_STATUS_CANCELED": 99498,
+    "cancel_ORDER_STATUS_REJECTED_REJECT_REASON_UNKNOWN_ORDER": 3453,
+    "place_ORDER_STATUS_ACCEPTED": 194749,
+    "place_ORDER_STATUS_REJECTED_REJECT_REASON_INVALID_PRICE": 762,
+    "place_ORDER_STATUS_REJECTED_REJECT_REASON_INVALID_QUANTITY": 1538
+  },
+  "achieved_completions_per_sec": 9999.969027762594,
+  "latency_us_from_intended_send_time": {
+    "P50": 173,
+    "P90": 493,
+    "P99": 15087,
+    "P999": 106943,
+    "Max": 157183
+  },
+  "scheduler_lag_us": {
+    "P50": 1,
+    "P90": 13,
+    "P99": 864,
+    "P999": 7967,
+    "Max": 16751
+  },
+  "latency_distribution_file": "bench/results/gateway-kafka+risk-native-gomaxprocs4-10000rps-20261109T072519Z-a034041-run3.json.hgrm"
+}

@@ -6,6 +6,9 @@
 #        RATE=20000 DURATION=20s RUNS=2 scripts/loadtest.sh
 #        KAFKA=localhost:9092 scripts/loadtest.sh   with the event log in the path
 #                                                   (start Kafka first: docker compose -f deploy/docker-compose.yml up -d --wait kafka)
+#        REDIS=localhost:16379 scripts/loadtest.sh  with pre-trade risk in the path (Redis balances are funded
+#                                                   first and audited after each run: funds must be conserved)
+#                                                   (start Redis first: docker compose -f deploy/docker-compose.yml up -d --wait redis)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -23,18 +26,32 @@ mkdir -p bin "$OUT"
 
 go build -o bin/gateway ./cmd/gateway
 go build -o bin/loadgen ./cmd/loadgen
+go build -o bin/risktool ./cmd/risktool
 
 GW_PID=""
 cleanup() { [ -n "$GW_PID" ] && kill "$GW_PID" 2>/dev/null || true; }
 trap cleanup EXIT
 
 KAFKA="${KAFKA:-}"
-TAG="${TAG:-$([ -n "$KAFKA" ] && echo kafka || echo nolog)}"
+REDIS="${REDIS:-}"
+# Per account, generous enough that funds never run out: the test measures the
+# cost of the risk check, not rejections. 16 accounts match the load generator.
+ACCOUNTS=16; FUND_BASE=1000000000; FUND_QUOTE=1000000000000
+LABEL="$([ -n "$KAFKA" ] && echo kafka || echo nolog)"
+[ -n "$REDIS" ] && LABEL="${LABEL}+risk"
+TAG="${TAG:-$LABEL}"
 for run in $(seq 1 "$RUNS"); do
   SYMBOL="BTC-USD"; GW_ARGS=()
   if [ -n "$KAFKA" ]; then
     SYMBOL="LT-${STAMP}-${run}"                       # fresh log per run
     GW_ARGS=(-kafka "$KAFKA" -data-dir "$(mktemp -d)")
+  fi
+  if [ -n "$REDIS" ]; then
+    # Fresh balances for every run: flush only the risk keys of these accounts.
+    for a in $(seq 1 "$ACCOUNTS"); do redis-cli -u "redis://${REDIS}" --scan --pattern "{${a}}:*" | xargs -n 100 redis-cli -u "redis://${REDIS}" del >/dev/null 2>&1 || true; done
+    ./bin/risktool fund -redis "$REDIS" -from 1 -to "$ACCOUNTS" -base "$FUND_BASE" -quote "$FUND_QUOTE"
+    # A rate limit high enough not to interfere; the limits themselves are tested separately.
+    GW_ARGS+=(-redis "$REDIS" -risk-rate 1000000 -risk-burst 1000000 -risk-max-open 100000)
   fi
   ./bin/gateway -grpc ":${GRPC_PORT}" -http ":${HTTP_PORT}" -symbol "$SYMBOL" ${GW_ARGS[@]+"${GW_ARGS[@]}"} >"$OUT/gateway-${STAMP}-run${run}.log" 2>&1 &
   GW_PID=$!
@@ -47,5 +64,8 @@ for run in $(seq 1 "$RUNS"); do
 
   curl -fsS "localhost:${HTTP_PORT}/metrics" | grep -E '^(mx_|go_gc_duration_seconds)' \
     >"$OUT/gateway-metrics-${TAG}-${RATE}rps-${STAMP}-${COMMIT}-run${run}.txt" || true
-  kill "$GW_PID"; wait "$GW_PID" 2>/dev/null || true; GW_PID=""
+  kill "$GW_PID"; wait "$GW_PID" 2>/dev/null || true; GW_PID=""   # SIGTERM drains the settlement queue
+  if [ -n "$REDIS" ]; then
+    ./bin/risktool audit -redis "$REDIS" -expect-base $((ACCOUNTS * FUND_BASE)) -expect-quote $((ACCOUNTS * FUND_QUOTE)) | tee "$OUT/risk-audit-${TAG}-${RATE}rps-${STAMP}-${COMMIT}-run${run}.txt"
+  fi
 done

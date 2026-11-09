@@ -37,5 +37,23 @@ The same two failures run hermetically (Testcontainers, a Kafka started and stop
 make bench-recovery        # publishes ~1M events, then times 5 clean replays
 ```
 
+## Pre-trade risk (Redis)
+```bash
+docker compose -f deploy/docker-compose.yml up -d --wait redis
+go run ./cmd/risktool fund  -redis localhost:16379 -from 1 -to 16 -base 1000000 -quote 1000000000   # seed balances
+go run ./cmd/gateway -redis localhost:16379 -kafka localhost:9092 ...                                  # enable risk
+go run ./cmd/risktool audit -redis localhost:16379 [-expect-base N -expect-quote N]                    # scan all accounts
+REDIS=localhost:16379 scripts/loadtest.sh                                                               # load test with risk, audits each run
+```
+`audit` exits non-zero on any negative balance, and, when `-expect-*` is given, unless available plus held equals the funded total (settlement conserves funds, so it must). It is only meaningful while no orders are in flight and after the gateway has been stopped with SIGTERM (which drains the settlement queue).
+
+Useful flags: `-risk-max-qty`, `-risk-max-price` (also the reserve price of a market buy), `-risk-max-open`, `-risk-rate` and `-risk-burst` (per account token bucket), `-risk-timeout` (Redis call bound; orders are refused with `UNAVAILABLE` past it).
+
+Metrics: `mx_risk_reserve_seconds{result}`, `mx_risk_rejects_total{reason}`, `mx_risk_settle_queue`, `mx_risk_settle_lag_seconds`, `mx_risk_settle_errors_total`, and two to alert on: `mx_risk_settle_dropped_total` (an op was lost, balances need reconciliation) and `mx_risk_settle_anomalies_total` (an op found no reservation, or a fill larger than its reservation: Redis and the engine disagree).
+
+Reset before running against a new event log: the settlement dedup remembers the last engine sequence per account and symbol, which restarts at 1 for a new topic. Delete the keys `{<account>}:*` first (`loadtest.sh` does).
+
+The hermetic tests (`go test ./internal/risk ./internal/gateway`, not under `-short`) run against a Redis started by Testcontainers, including stopping and restarting it.
+
 ## Reconciliation
 Arrives with the ledger (phase 5).

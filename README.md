@@ -14,14 +14,14 @@ The specification is [requirements.md](requirements.md). Significant decisions a
 | 1 | Engine core: order book, matching rules, reference implementation, property and differential tests, benchmarks | done |
 | 2 | gRPC gateway, idempotency, ring buffer into the engine, open-loop load generator | done |
 | 3 | Kafka event log, snapshots, replay and recovery | done |
-| 4 | Pre-trade risk in Redis (Lua) | next |
-| 5 | Double-entry ledger in PostgreSQL, dead-letter topic, reconciliation | planned |
+| 4 | Pre-trade risk in Redis (Lua) | done |
+| 5 | Double-entry ledger in PostgreSQL, dead-letter topic, reconciliation | next |
 | 6 | Market data over WebSocket, synthetic order flow | planned |
 | 7 | Kubernetes (k3d, Argo CD, Strimzi, CloudNativePG), dashboards | planned |
 | 8 | Optimization report, optional standby failover | planned |
 | 9 | Minimal UI (stretch) | planned |
 
-The engine and a gRPC gateway exist today; Kafka now holds the event log; Redis (risk) and PostgreSQL (ledger) are not in the order path yet. The diagram below is the **target** architecture.
+The engine, a gRPC gateway, the Kafka event log and Redis pre-trade risk exist today; PostgreSQL (the ledger) is not in the order path yet. The diagram below is the **target** architecture.
 
 ## Target architecture
 
@@ -95,19 +95,32 @@ With `-kafka` the gateway persists every engine event to Kafka and can rebuild i
 
 Honest limits: client acknowledgements are sent before Kafka acknowledges, so a crash can lose the last few tens of milliseconds of events that clients were already told about (the window is measured and documented, not zero). Gateway-side state (the idempotency table, report subscriptions) is still in memory and is not recovered, so after a restart an order placed before the crash cannot be cancelled by its `client_order_id`.
 
+### Pre-trade risk (phase 4)
+
+With `-redis` the gateway checks every order against balances in Redis before the engine sees it ([ADR 0009](docs/adr/0009-pretrade-risk-in-redis.md)):
+
+- **Atomic reservation in Lua.** A buy holds `qty * price` of the quote asset, a sell holds `qty` of the base asset (a market buy holds `qty * max price`, an upper bound on any execution price). In one script call it also applies the token-bucket rate limit and the max-open-orders limit. Max order size and price range are checked in Go first. Rejections are typed: `INSUFFICIENT_FUNDS`, `RATE_LIMITED`, `ORDER_TOO_LARGE`, `TOO_MANY_OPEN_ORDERS`.
+- **Fills consume and cancels release, off the hot path.** The matcher never talks to Redis. The dispatcher turns engine events into settlement ops, and one worker applies them to Redis asynchronously, in event order, with retries. Each op carries its engine sequence number and Redis skips a sequence it already applied, so a retry after a timeout cannot double-apply.
+- **Fails closed.** If Redis does not answer within the timeout the order is refused with `UNAVAILABLE`; if settlement falls behind, new orders get `RESOURCE_EXHAUSTED`.
+- **Verified against a real Redis** (Testcontainers): 400 concurrent reservations against a balance that fits exactly 100 never overdraw and never leave available negative; Lua unit tests; a random end-to-end flow through the gateway conserves funds exactly; Redis stopped and restarted underneath a running gateway.
+- **Measured** (one laptop, Redis on the same host, 10k orders/s): the check adds about 75 to 90 µs at p50 with a native Redis (p50 78 to 90 µs without risk, 152 to 175 µs with it, with or without the Kafka log). The tail is **not** under control: p99 met the 5 ms target in only some runs, and with Redis through Docker Desktop or with all 10 cores in use, orders were sometimes refused after the 100 ms Redis timeout (up to 7.7% in the worst run). Redis's own slowlog shows stalls inside Redis, which I attribute, as a hypothesis from one experiment, to CPU oversubscription on this laptop. Funds were conserved exactly in all 15 audited runs. Details and every run in [BENCHMARKS.md](BENCHMARKS.md).
+
+Honest limits: Redis and the engine can disagree after a gateway crash (queued settlement ops are lost, and the client order id needed to rebuild them is not in the event log, the same gap as the idempotency table); orders reserved but never accepted keep their funds held with no expiry; there is no deposit flow (balances are seeded with `cmd/risktool fund`); the spec's Redis partition chaos test exists as an integration test (Redis stopped and restarted), not as a script.
+
 ## Quick start
 
 Requirements: Go (version in `go.mod`), Docker with Compose, and `golangci-lint` for `make lint`.
 
 ```bash
 make test          # unit and property tests with -race, random order (short differential run, no Docker)
-make test-full     # also the full 1M-operation differential test and the Kafka integration tests (needs Docker)
+make test-full     # also the full 1M-operation differential test and the Kafka and Redis integration tests (needs Docker)
 make lint          # go vet + golangci-lint
 make bench         # Go micro-benchmarks
 make bench-report  # full reproducible engine report (writes bench/results/)
 make loadtest      # end-to-end open-loop gRPC load test, 3 runs at 10k orders/s
 make bench-recovery  # replay of a 1M-event log from Kafka (needs Docker)
 make chaos         # kill -9 the engine and Kafka under load and verify (needs Docker)
+REDIS=localhost:16379 make loadtest   # the same load test with pre-trade risk (funds 16 accounts, audits conservation)
 make proto         # regenerate gen/ from proto/ (needs buf and the protoc-gen-go plugins)
 
 make up            # docker compose: kafka, redis, postgres, prometheus, gateway
@@ -124,11 +137,13 @@ The local PostgreSQL password in `deploy/docker-compose.yml` is a development-on
 cmd/gateway          order gateway: gRPC API, /healthz, /readyz, /metrics
 cmd/loadgen          open-loop gRPC load generator
 cmd/logtool          event log checks: replay and continuity, snapshot-vs-clean comparison, generator
+cmd/risktool         seed (fund) and audit the Redis balances
 proto/               Protobuf API (buf managed); gen/ holds the generated Go code
 internal/gateway     gRPC server, validation, idempotency
 internal/pipeline    gateway-to-engine rings, engine goroutine, dispatcher, report hub
 internal/ring        lock-free SPSC and MPSC bounded queues
 internal/eventlog    Kafka publisher, snapshots, follower, recovery (kafkatest: Docker broker for tests)
+internal/risk        Redis pre-trade risk: Lua scripts, reservation, rate limit, async settlement (redistest: Docker Redis for tests)
 internal/benchenv    environment capture for benchmark results
 internal/engine      matching engine and order book
 internal/refbook     naive reference implementation (differential tests, benchmarks)

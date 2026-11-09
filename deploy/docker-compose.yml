@@ -27,6 +27,10 @@ services:
 
   redis:
     image: redis:7-alpine
+    # Balances live here, so persist them: append-only file, fsync every second.
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    volumes:
+      - redis-data:/data
     ports:
       - "${REDIS_PORT:-16379}:6379"
     healthcheck:
@@ -64,7 +68,7 @@ services:
       args:
         CMD: gateway
     # Event log on Kafka (internal listener) and snapshots on a named volume.
-    command: ["-kafka", "kafka:19092", "-data-dir", "/data"]
+    command: ["-kafka", "kafka:19092", "-data-dir", "/data", "-redis", "redis:6379"]
     volumes:
       - gateway-data:/data
     ports:
@@ -83,4 +87,5 @@ services:
         condition: service_healthy
 
 volumes:
+  redis-data:
   gateway-data:

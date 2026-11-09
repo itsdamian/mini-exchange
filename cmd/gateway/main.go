@@ -19,6 +19,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
+	"github.com/redis/go-redis/v9"
 	"google.golang.org/grpc"
 
 	"github.com/itsdamian/mini-exchange/internal/engine"
@@ -26,6 +27,7 @@ import (
 	"github.com/itsdamian/mini-exchange/internal/gateway"
 	"github.com/itsdamian/mini-exchange/internal/httpserver"
 	"github.com/itsdamian/mini-exchange/internal/pipeline"
+	"github.com/itsdamian/mini-exchange/internal/risk"
 )
 
 func main() {
@@ -49,6 +51,14 @@ func run() error {
 		linger    = flag.Duration("kafka-linger", 5*time.Millisecond, "Kafka producer linger")
 		highWater = flag.Int("log-high-watermark", 8192, "unacknowledged batches at which new orders are refused")
 		replicas  = flag.Int("kafka-replication", 1, "replication factor for a newly created event topic")
+
+		redisAddr = flag.String("redis", "", "Redis address for pre-trade risk; empty runs without risk checks (any order is admitted)")
+		maxQty    = flag.Int64("risk-max-qty", 1_000_000, "largest order quantity (units)")
+		maxPrice  = flag.Int64("risk-max-price", 1_000_000, "largest limit price (ticks); a market buy reserves funds at this price")
+		maxOpen   = flag.Int64("risk-max-open", 1000, "open orders per account (0 disables)")
+		rateLimit = flag.Int64("risk-rate", 1000, "orders per second per account, token bucket refill (0 disables)")
+		rateBurst = flag.Int64("risk-burst", 2000, "token bucket capacity per account")
+		riskTO    = flag.Duration("risk-timeout", 100*time.Millisecond, "timeout of the pre-trade Redis call")
 	)
 	flag.Parse()
 
@@ -102,8 +112,36 @@ func run() error {
 		log.Warn("no -kafka given: running WITHOUT an event log, all state is lost on exit")
 	}
 
+	var checker *risk.Checker
+	if *redisAddr != "" {
+		rdb := redis.NewClient(&redis.Options{Addr: *redisAddr, DialTimeout: time.Second, MaxRetries: 1})
+		defer rdb.Close()
+		setupCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		var err error
+		checker, err = risk.New(setupCtx, rdb, risk.Config{
+			Symbol:  *symbol,
+			Limits:  risk.Limits{MaxOrderQty: *maxQty, MaxPrice: *maxPrice, MaxOpenOrders: *maxOpen, RatePerSec: *rateLimit, Burst: *rateBurst},
+			Timeout: *riskTO, Registerer: reg,
+		})
+		cancel()
+		if err != nil {
+			return fmt.Errorf("risk: %w", err)
+		}
+		if *kafka == "" {
+			log.Warn("-redis without -kafka: the engine sequence restarts at 1 on every start but Redis remembers the last one it applied, so settlement would be skipped after a restart; clear the risk keys first (loadtest.sh does)")
+		}
+		pcfg.Risk = checker // only when enabled: a typed nil would defeat the nil check
+		log.Info("pre-trade risk enabled", "redis", *redisAddr, "max_qty", *maxQty, "max_price", *maxPrice,
+			"max_open", *maxOpen, "rate_per_sec", *rateLimit, "burst", *rateBurst)
+	} else {
+		log.Warn("no -redis given: running WITHOUT pre-trade risk, every order is admitted")
+	}
+
 	p := pipeline.New(pcfg)
 	gw := gateway.New(*symbol, p, reg)
+	if checker != nil {
+		gw.WithRisk(checker)
+	}
 
 	lis, err := net.Listen("tcp", *grpcAddr)
 	if err != nil {
@@ -155,6 +193,11 @@ func run() error {
 	}
 	if err := p.Stop(shutdownCtx); err != nil {
 		return err
+	}
+	if checker != nil {
+		if err := checker.Close(shutdownCtx); err != nil { // apply the queued settlements
+			log.Error("risk settlement not fully applied", "err", err)
+		}
 	}
 	if pub != nil {
 		if err := pub.Close(shutdownCtx); err != nil {

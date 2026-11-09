@@ -1,0 +1,2 @@
+accounts=16 base: avail=15999972509 held=27491 total=16000000000 | quote: avail=15997408188750 held=2591811250 total=16000000000000 | open=1071 negative_accounts=0
+audit ok

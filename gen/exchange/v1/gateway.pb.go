@@ -181,6 +181,10 @@ const (
 	RejectReason_REJECT_REASON_RATE_LIMITED       RejectReason = 5
 	RejectReason_REJECT_REASON_INVALID_ORDER      RejectReason = 6
 	RejectReason_REJECT_REASON_DUPLICATE_ORDER_ID RejectReason = 7
+	// Pre-trade risk limits (phase 4). These are decided before the engine, so they
+	// are not in the event log.
+	RejectReason_REJECT_REASON_ORDER_TOO_LARGE      RejectReason = 8
+	RejectReason_REJECT_REASON_TOO_MANY_OPEN_ORDERS RejectReason = 9
 )
 
 // Enum value maps for RejectReason.
@@ -194,16 +198,20 @@ var (
 		5: "REJECT_REASON_RATE_LIMITED",
 		6: "REJECT_REASON_INVALID_ORDER",
 		7: "REJECT_REASON_DUPLICATE_ORDER_ID",
+		8: "REJECT_REASON_ORDER_TOO_LARGE",
+		9: "REJECT_REASON_TOO_MANY_OPEN_ORDERS",
 	}
 	RejectReason_value = map[string]int32{
-		"REJECT_REASON_UNSPECIFIED":        0,
-		"REJECT_REASON_INVALID_PRICE":      1,
-		"REJECT_REASON_INVALID_QUANTITY":   2,
-		"REJECT_REASON_UNKNOWN_ORDER":      3,
-		"REJECT_REASON_INSUFFICIENT_FUNDS": 4,
-		"REJECT_REASON_RATE_LIMITED":       5,
-		"REJECT_REASON_INVALID_ORDER":      6,
-		"REJECT_REASON_DUPLICATE_ORDER_ID": 7,
+		"REJECT_REASON_UNSPECIFIED":          0,
+		"REJECT_REASON_INVALID_PRICE":        1,
+		"REJECT_REASON_INVALID_QUANTITY":     2,
+		"REJECT_REASON_UNKNOWN_ORDER":        3,
+		"REJECT_REASON_INSUFFICIENT_FUNDS":   4,
+		"REJECT_REASON_RATE_LIMITED":         5,
+		"REJECT_REASON_INVALID_ORDER":        6,
+		"REJECT_REASON_DUPLICATE_ORDER_ID":   7,
+		"REJECT_REASON_ORDER_TOO_LARGE":      8,
+		"REJECT_REASON_TOO_MANY_OPEN_ORDERS": 9,
 	}
 )
 
@@ -959,7 +967,7 @@ const file_exchange_v1_gateway_proto_rawDesc = "" +
 	"\vTimeInForce\x12\x1d\n" +
 	"\x19TIME_IN_FORCE_UNSPECIFIED\x10\x00\x12\x15\n" +
 	"\x11TIME_IN_FORCE_GTC\x10\x01\x12\x15\n" +
-	"\x11TIME_IN_FORCE_IOC\x10\x02*\xa0\x02\n" +
+	"\x11TIME_IN_FORCE_IOC\x10\x02*\xeb\x02\n" +
 	"\fRejectReason\x12\x1d\n" +
 	"\x19REJECT_REASON_UNSPECIFIED\x10\x00\x12\x1f\n" +
 	"\x1bREJECT_REASON_INVALID_PRICE\x10\x01\x12\"\n" +
@@ -968,7 +976,9 @@ const file_exchange_v1_gateway_proto_rawDesc = "" +
 	" REJECT_REASON_INSUFFICIENT_FUNDS\x10\x04\x12\x1e\n" +
 	"\x1aREJECT_REASON_RATE_LIMITED\x10\x05\x12\x1f\n" +
 	"\x1bREJECT_REASON_INVALID_ORDER\x10\x06\x12$\n" +
-	" REJECT_REASON_DUPLICATE_ORDER_ID\x10\a*|\n" +
+	" REJECT_REASON_DUPLICATE_ORDER_ID\x10\a\x12!\n" +
+	"\x1dREJECT_REASON_ORDER_TOO_LARGE\x10\b\x12&\n" +
+	"\"REJECT_REASON_TOO_MANY_OPEN_ORDERS\x10\t*|\n" +
 	"\vOrderStatus\x12\x1c\n" +
 	"\x18ORDER_STATUS_UNSPECIFIED\x10\x00\x12\x19\n" +
 	"\x15ORDER_STATUS_ACCEPTED\x10\x01\x12\x19\n" +

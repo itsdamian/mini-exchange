@@ -28,6 +28,7 @@ import (
 
 	"github.com/itsdamian/mini-exchange/internal/engine"
 	"github.com/itsdamian/mini-exchange/internal/ring"
+	"github.com/itsdamian/mini-exchange/internal/risk"
 )
 
 // Errors returned by Submit.
@@ -45,6 +46,13 @@ var (
 
 // EventLog receives the events of every command, one batch per command, in
 // sequence order, from the dispatcher goroutine.
+// RiskSink receives one settlement operation per engine event that changes a
+// pre-trade risk reservation. Enqueue must not block: it runs on the
+// dispatcher goroutine.
+type RiskSink interface {
+	Enqueue(risk.Op)
+}
+
 type EventLog interface {
 	// Append takes ownership of evs.
 	Append(evs []engine.Event)
@@ -63,6 +71,7 @@ type Config struct {
 	Book         engine.Config
 	Restore      *Restored // start from recovered state instead of an empty book
 	Log          EventLog  // nil: events are not persisted
+	Risk         RiskSink  // nil: reservations are not settled (risk disabled)
 	InputSize    int       // MPSC ring capacity, power of two (default 65536)
 	OutputSize   int       // SPSC ring capacity, power of two (default 65536)
 	MaxInFlight  int       // concurrent Submit calls (default 32768)
@@ -142,6 +151,7 @@ type Pipeline struct {
 	inPark, outPark *parker
 	hub             *hub
 	log             EventLog
+	risk            RiskSink
 
 	base     time.Time
 	baseUnix int64
@@ -195,6 +205,7 @@ func New(cfg Config) *Pipeline {
 	p := &Pipeline{
 		book:     book,
 		log:      cfg.Log,
+		risk:     cfg.Risk,
 		nextID:   nextID,
 		in:       ring.NewMPSC[inItem](cfg.InputSize),
 		out:      ring.NewSPSC[outItem](cfg.OutputSize),
@@ -437,21 +448,34 @@ func (p *Pipeline) handle(it *outItem) {
 	case engine.EvAccepted:
 		p.accepted.Add(1)
 		p.live[ev.OrderID] = liveOrder{client: client, account: ev.AccountID, side: ev.Side, remaining: ev.Qty}
+		if p.risk != nil {
+			p.risk.Enqueue(risk.Op{Kind: risk.OpBind, Seq: ev.Seq, Account: ev.AccountID, OrderID: ev.OrderID, Client: client})
+		}
 		p.hub.publish(&Report{Type: ReportNew, AccountID: ev.AccountID, OrderID: ev.OrderID, ClientOrderID: client,
 			Side: ev.Side, Price: ev.Price, Qty: ev.Qty, Leaves: ev.Qty, Seq: ev.Seq, Ts: ev.Ts})
 	case engine.EvRejected:
 		p.rejected.Add(1)
+		if p.risk != nil && ev.Reject != engine.RejectUnknownOrder { // UnknownOrder is a rejected cancel: nothing was reserved by it
+			p.risk.Enqueue(risk.Op{Kind: risk.OpRelease, Seq: ev.Seq, Account: ev.AccountID, Client: client})
+		}
 		p.hub.publish(&Report{Type: ReportRejected, AccountID: ev.AccountID, OrderID: ev.OrderID, ClientOrderID: client,
 			Side: ev.Side, Price: ev.Price, Qty: ev.Qty, Reject: ev.Reject, Seq: ev.Seq, Ts: ev.Ts})
 	case engine.EvCanceled:
 		p.canceled.Add(1)
 		o := p.live[ev.OrderID]
 		delete(p.live, ev.OrderID)
+		if p.risk != nil {
+			p.risk.Enqueue(risk.Op{Kind: risk.OpCancel, Seq: ev.Seq, Account: ev.AccountID, OrderID: ev.OrderID})
+		}
 		p.hub.publish(&Report{Type: ReportCanceled, AccountID: ev.AccountID, OrderID: ev.OrderID, ClientOrderID: o.client,
 			Side: ev.Side, Price: ev.Price, Qty: ev.Qty, Seq: ev.Seq, Ts: ev.Ts})
 	case engine.EvTrade:
 		p.trades.Add(1)
 		taker, maker := p.live[ev.OrderID], p.live[ev.MakerOrderID]
+		if p.risk != nil {
+			p.risk.Enqueue(risk.Op{Kind: risk.OpFill, Seq: ev.Seq, Account: ev.AccountID, OrderID: ev.OrderID, Price: ev.Price, Qty: ev.Qty})
+			p.risk.Enqueue(risk.Op{Kind: risk.OpFill, Seq: ev.Seq, Account: ev.MakerAccountID, OrderID: ev.MakerOrderID, Price: ev.Price, Qty: ev.Qty})
+		}
 		taker.remaining -= ev.Qty
 		maker.remaining -= ev.Qty
 		p.settle(ev.OrderID, taker)

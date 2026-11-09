@@ -3,6 +3,7 @@ package gateway
 import (
 	"github.com/itsdamian/mini-exchange/internal/engine"
 	"github.com/itsdamian/mini-exchange/internal/pipeline"
+	"github.com/itsdamian/mini-exchange/internal/risk"
 
 	exchangev1 "github.com/itsdamian/mini-exchange/gen/exchange/v1"
 )
@@ -45,6 +46,24 @@ func toEngineTIF(t exchangev1.TimeInForce) engine.TimeInForce {
 		return engine.IOC
 	}
 	return 0
+}
+
+func fromRiskReason(r risk.Reason) exchangev1.RejectReason {
+	switch r {
+	case risk.RateLimited:
+		return exchangev1.RejectReason_REJECT_REASON_RATE_LIMITED
+	case risk.OrderTooLarge:
+		return exchangev1.RejectReason_REJECT_REASON_ORDER_TOO_LARGE
+	case risk.TooManyOpenOrders:
+		return exchangev1.RejectReason_REJECT_REASON_TOO_MANY_OPEN_ORDERS
+	case risk.InsufficientFunds:
+		return exchangev1.RejectReason_REJECT_REASON_INSUFFICIENT_FUNDS
+	case risk.InvalidPrice:
+		return exchangev1.RejectReason_REJECT_REASON_INVALID_PRICE
+	case risk.InvalidQuantity:
+		return exchangev1.RejectReason_REJECT_REASON_INVALID_QUANTITY
+	}
+	return exchangev1.RejectReason_REJECT_REASON_UNSPECIFIED
 }
 
 func fromEngineReject(r engine.RejectReason) exchangev1.RejectReason {

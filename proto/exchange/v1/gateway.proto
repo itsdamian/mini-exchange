@@ -52,6 +52,10 @@ enum RejectReason {
   REJECT_REASON_RATE_LIMITED = 5;
   REJECT_REASON_INVALID_ORDER = 6;
   REJECT_REASON_DUPLICATE_ORDER_ID = 7;
+  // Pre-trade risk limits (phase 4). These are decided before the engine, so they
+  // are not in the event log.
+  REJECT_REASON_ORDER_TOO_LARGE = 8;
+  REJECT_REASON_TOO_MANY_OPEN_ORDERS = 9;
 }
 
 enum OrderStatus {

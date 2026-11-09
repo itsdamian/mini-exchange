@@ -1,0 +1,6 @@
+{"time":"2026-11-09T15:22:44.338918+08:00","level":"WARN","msg":"no -kafka given: running WITHOUT an event log, all state is lost on exit","service":"gateway"}
+{"time":"2026-11-09T15:22:44.340604+08:00","level":"WARN","msg":"-redis without -kafka: the engine sequence restarts at 1 on every start but Redis remembers the last one it applied, so settlement would be skipped after a restart; clear the risk keys first (loadtest.sh does)","service":"gateway"}
+{"time":"2026-11-09T15:22:44.340619+08:00","level":"INFO","msg":"pre-trade risk enabled","service":"gateway","redis":"localhost:16380","max_qty":1000000,"max_price":1000000,"max_open":100000,"rate_per_sec":1000000,"burst":1000000}
+{"time":"2026-11-09T15:22:44.350743+08:00","level":"INFO","msg":"http listening","service":"gateway","addr":":18071"}
+{"time":"2026-11-09T15:22:44.350762+08:00","level":"INFO","msg":"grpc listening","service":"gateway","addr":"[::]:50071","symbol":"BTC-USD"}
+{"time":"2026-11-09T15:23:19.731753+08:00","level":"INFO","msg":"shutting down","service":"gateway"}
