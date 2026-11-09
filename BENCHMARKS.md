@@ -62,3 +62,57 @@ A heap profile (`-memprofile -memprofilerate 1`) attributes the remaining alloca
 
 - `TestDifferentialAgainstReference`: 1,000,000 random operations (two seeds), identical events for every operation and identical book hash at checkpoints versus `internal/refbook`.
 - Property tests (rapid): book never crossed, per-order quantity conserved (accepted = filled + cancelled + resting), price-time priority, no self-trades, same input gives the same output hash and book hash.
+
+## Phase 2: gateway end to end (gRPC over loopback)
+
+### Environment
+
+| | |
+|---|---|
+| Hardware / OS / Go | Apple M5, 10 logical CPUs; darwin/arm64; go1.27.3 |
+| GOMAXPROCS / GOGC / GOMEMLIMIT | 10 / 100 (default) / unset (gateway and loadgen both) |
+| Commit | `790907a` (clean tree) |
+| Topology | **gateway and load generator on the same machine over loopback**; no network, no Kafka, Redis or PostgreSQL in the path yet. They compete for the same 10 cores |
+| Raw results | `bench/results/gateway-10000rps-20261109T051753Z-790907a-run{1,2,3}.json` (+ `.hgrm` full percentile distributions), `gateway-metrics-...-run{1,2,3}.txt` (server-side Prometheus histograms) |
+| Reproduce | `make loadtest` (`scripts/loadtest.sh`; `RATE`, `DURATION`, `RUNS` env vars) |
+
+### Method
+
+- **Open loop, fixed arrival rate.** `cmd/loadgen` issues requests on a fixed schedule (10,000 per second) whether or not earlier responses have returned, and measures each latency from the request's **intended send time**, so a stall cannot hide the requests that should have been sent during it (no coordinated omission). Latencies are recorded in an HdrHistogram (3 significant digits).
+- 5 s unmeasured warm-up, then 30 s measured (300,000 requests), 3 runs, each against a freshly started gateway.
+- Workload: the seeded mixed stream of `internal/enginetest` (about 65% places, 35% cancels; some malformed orders for typed rejects; 16 accounts), 4 gRPC connections. Cancels that overtake their place under concurrency come back as `UNKNOWN_ORDER`; that is an expected outcome, counted in the raw JSON. No request failed with a gRPC error in any run.
+- The loadgen reports its own scheduling lag next to the result so you can judge whether the generator kept up.
+
+### Results: 10,000 orders/s sustained
+
+Client-observed latency, microseconds, from intended send time:
+
+| Run | achieved/s | p50 | p90 | p99 | p99.9 | max |
+|---|---|---|---|---|---|---|
+| 1 | 10,000 | 81 | 140 | 1,650 | 10,671 | 19,215 |
+| 2 | 10,000 | 82 | 146 | 2,753 | 37,887 | 77,631 |
+| 3 | 10,000 | 85 | 147 | 2,401 | 13,455 | 26,719 |
+
+Loadgen scheduling lag (how late it actually sent versus the schedule), microseconds: p50 1, p99 85 to 290, p99.9 1,642 to 10,127, max 4,511 to 21,215.
+
+Server-side histograms (`mx_engine_*`, upper bucket bounds, so values are "at most"):
+
+| Run | match time p99 / p99.9 / p99.99 | engine queue wait p99 / p99.9 / p99.99 |
+|---|---|---|
+| 1 | 1.6 µs / 12.8 µs / 51.2 µs | 51 µs / 819 µs / 6.6 ms |
+| 2 | 1.6 µs / 12.8 µs / 51.2 µs | 51 µs / 3.3 ms / 13.1 ms |
+| 3 | 1.6 µs / 12.8 µs / 51.2 µs | 51 µs / 819 µs / 3.3 ms |
+
+### Against the phase 2 targets (10k orders/s, localhost)
+
+| Target (section 5.1) | Measured | Verdict |
+|---|---|---|
+| p50 under 1 ms | 81 to 85 µs | met |
+| p99 under 5 ms | 1.65 to 2.75 ms | met, on this machine and topology |
+
+### What these numbers do not say
+
+- **The tail is not clean.** p99.9 is 10 to 38 ms and the maximum up to 78 ms. Part of that is the load generator itself stalling (its p99.9 scheduling lag reached 10 ms in run 2) on a machine shared with the gateway, and part is on the server side: engine queue wait at p99.9 is up to 3.3 ms. The matcher is not the cause (match time stays within tens of microseconds). The remaining suspects are goroutine wake-up latency after the engine parks, scheduler contention between the two processes, and GC (25 short cycles per run, each about 0.1 ms, so unlikely). I have not isolated which dominates; separating them (pinning the engine thread, a separate load generator host, longer spinning before parking) belongs with the phase 8 experiments.
+- Loopback on one machine says nothing about a real network.
+- Only one request mix and one rate were measured. Higher rates and saturation behaviour are not characterised yet.
+- The idempotency records are in memory and unbounded (ADR 0006); long runs grow gateway memory.

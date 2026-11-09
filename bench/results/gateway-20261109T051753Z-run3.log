@@ -1,0 +1,3 @@
+{"time":"2026-11-09T13:19:07.327558+08:00","level":"INFO","msg":"http listening","service":"gateway","addr":":18071"}
+{"time":"2026-11-09T13:19:07.327562+08:00","level":"INFO","msg":"grpc listening","service":"gateway","addr":"[::]:50071","symbol":"BTC-USD"}
+{"time":"2026-11-09T13:19:42.714947+08:00","level":"INFO","msg":"shutting down","service":"gateway"}
