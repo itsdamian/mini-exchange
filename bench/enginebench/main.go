@@ -186,7 +186,7 @@ func gitCommit() string {
 		return "unknown"
 	}
 	c := strings.TrimSpace(string(rev))
-	if st, err := exec.Command("git", "status", "--porcelain").Output(); err == nil && len(strings.TrimSpace(string(st))) > 0 {
+	if st, err := exec.Command("git", "status", "--porcelain", "--untracked-files=no").Output(); err == nil && len(strings.TrimSpace(string(st))) > 0 {
 		c += "-dirty"
 	}
 	return c
