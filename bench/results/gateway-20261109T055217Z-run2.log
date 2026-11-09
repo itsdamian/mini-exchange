@@ -1,0 +1,9 @@
+{"time":"2026-11-09T13:52:56.446171+08:00","level":"INFO","msg":"recovered","service":"gateway","from_snapshot":false,"snapshot_seq":0,"replayed_batches":0,"replayed_events":0,"last_seq":0,"book_hash":"a8c7f832281a39c5","resting_orders":0,"log_end_offset":0,"snapshot_load_ms":1,"replay_ms":0,"total_ms":7}
+{"time":"2026-11-09T13:52:56.451199+08:00","level":"INFO","msg":"http listening","service":"gateway","addr":":18071"}
+{"time":"2026-11-09T13:52:56.451212+08:00","level":"INFO","msg":"grpc listening","service":"gateway","addr":"[::]:50071","symbol":"LT-20261109T055217Z-2"}
+{"time":"2026-11-09T13:53:04.422352+08:00","level":"INFO","msg":"snapshot written","service":"gateway","seq":100000,"offset":75714,"orders":440}
+{"time":"2026-11-09T13:53:12.073067+08:00","level":"INFO","msg":"snapshot written","service":"gateway","seq":200000,"offset":151516,"orders":433}
+{"time":"2026-11-09T13:53:19.765209+08:00","level":"INFO","msg":"snapshot written","service":"gateway","seq":300000,"offset":227719,"orders":448}
+{"time":"2026-11-09T13:53:27.444787+08:00","level":"INFO","msg":"snapshot written","service":"gateway","seq":400002,"offset":303733,"orders":481}
+{"time":"2026-11-09T13:53:31.817177+08:00","level":"INFO","msg":"shutting down","service":"gateway"}
+{"time":"2026-11-09T13:53:31.825478+08:00","level":"INFO","msg":"snapshot written","service":"gateway","seq":456395,"offset":346702,"orders":452}

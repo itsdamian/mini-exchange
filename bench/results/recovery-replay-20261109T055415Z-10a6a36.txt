@@ -1,0 +1,14 @@
+ Container mini-exchange-kafka-1 Running 
+ Container mini-exchange-kafka-1 Waiting 
+ Container mini-exchange-kafka-1 Healthy 
+hardware: Apple M5; go version go1.27.3 darwin/arm64; commit 10a6a36 
+
+== publish ~1000000 events to REPLAY-20261109T055415Z ==
+published 1000000 events (last seq 1000000, book hash 6f8f2f92bb284ceb) in 0.71s = 1399095 events/s; acked 1000000
+
+== clean replay of the whole log, 5 runs ==
+clean-replay       last_seq=1000000 events=1000000 batches=761417 resting=403 book_hash=6f8f2f92bb284ceb total=550.5ms replay=542.5ms 1843362 events/s
+clean-replay       last_seq=1000000 events=1000000 batches=761417 resting=403 book_hash=6f8f2f92bb284ceb total=483.9ms replay=475.9ms 2101340 events/s
+clean-replay       last_seq=1000000 events=1000000 batches=761417 resting=403 book_hash=6f8f2f92bb284ceb total=484.3ms replay=475.7ms 2102000 events/s
+clean-replay       last_seq=1000000 events=1000000 batches=761417 resting=403 book_hash=6f8f2f92bb284ceb total=558.8ms replay=551.4ms 1813551 events/s
+clean-replay       last_seq=1000000 events=1000000 batches=761417 resting=403 book_hash=6f8f2f92bb284ceb total=457.0ms replay=449.9ms 2222486 events/s

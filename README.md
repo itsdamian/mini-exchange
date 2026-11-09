@@ -13,15 +13,15 @@ The specification is [requirements.md](requirements.md). Significant decisions a
 | 0 | Scaffold: module, CI, docker compose (Kafka, Redis, PostgreSQL, Prometheus) | done |
 | 1 | Engine core: order book, matching rules, reference implementation, property and differential tests, benchmarks | done |
 | 2 | gRPC gateway, idempotency, ring buffer into the engine, open-loop load generator | done |
-| 3 | Kafka event log, snapshots, replay and recovery | next |
-| 4 | Pre-trade risk in Redis (Lua) | planned |
+| 3 | Kafka event log, snapshots, replay and recovery | done |
+| 4 | Pre-trade risk in Redis (Lua) | next |
 | 5 | Double-entry ledger in PostgreSQL, dead-letter topic, reconciliation | planned |
 | 6 | Market data over WebSocket, synthetic order flow | planned |
 | 7 | Kubernetes (k3d, Argo CD, Strimzi, CloudNativePG), dashboards | planned |
 | 8 | Optimization report, optional standby failover | planned |
 | 9 | Minimal UI (stretch) | planned |
 
-The engine and a gRPC gateway exist today; there is no Kafka, Redis or PostgreSQL in the order path yet, so nothing is persisted and a restart loses all state. The diagram below is the **target** architecture.
+The engine and a gRPC gateway exist today; Kafka now holds the event log; Redis (risk) and PostgreSQL (ledger) are not in the order path yet. The diagram below is the **target** architecture.
 
 ## Target architecture
 
@@ -83,19 +83,31 @@ A gRPC API (`proto/exchange/v1/gateway.proto`, managed with `buf`) in front of t
 
 Measured with the gateway and load generator on the same laptop over loopback at 10,000 orders/s (3 runs of 30 s): p50 about 80 µs and p99 about 1.7 to 2.8 ms, within the targets. The extreme tail (p99.9 and max) is noisy and not yet explained; see [BENCHMARKS.md](BENCHMARKS.md) for method, per-run results and caveats.
 
-Known limits: idempotency records are in memory and unbounded, and nothing survives a restart until phase 3.
+### Event log, snapshots and recovery (phase 3)
+
+With `-kafka` the gateway persists every engine event to Kafka and can rebuild its state after a crash:
+
+- **The log is the system of record** ([ADR 0007](docs/adr/0007-event-log-on-kafka.md)): one topic per symbol, one partition, one record per engine command (so a command is atomic in the log), schema-versioned Protobuf, infinite retention.
+- **The producer is asynchronous and never blocks the matcher.** If Kafka is slow or down, events queue in a bounded buffer; past a watermark the gateway refuses new orders with `RESOURCE_EXHAUSTED`. Nothing is dropped silently.
+- **Snapshots plus replay** ([ADR 0008](docs/adr/0008-snapshots-and-recovery.md)): a follower applies only Kafka-acknowledged events and snapshots that copy, so a snapshot can never be ahead of the log. Recovery loads the newest valid snapshot and replays the rest, and refuses to start on a gap, a duplicate, a snapshot ahead of the log, or an event that does not apply.
+- **Verified**: replay equals the live book after every command (property test); against a real Kafka broker (Testcontainers) the log survives Kafka being stopped or killed with no event lost or duplicated; and two chaos scripts `kill -9` the engine and Kafka under load. After the engine kill, snapshot recovery gave exactly the same book hash as a clean replay of the whole log (`logtool compare`).
+- **Measured** (one laptop, local single-node Kafka): clean replay of 1,000,000 events from Kafka takes about 0.5 s; recovery after the engine kill took 35 ms. See [BENCHMARKS.md](BENCHMARKS.md) for method and caveats, and [docs/runbook.md](docs/runbook.md) to run it.
+
+Honest limits: client acknowledgements are sent before Kafka acknowledges, so a crash can lose the last few tens of milliseconds of events that clients were already told about (the window is measured and documented, not zero). Gateway-side state (the idempotency table, report subscriptions) is still in memory and is not recovered, so after a restart an order placed before the crash cannot be cancelled by its `client_order_id`.
 
 ## Quick start
 
 Requirements: Go (version in `go.mod`), Docker with Compose, and `golangci-lint` for `make lint`.
 
 ```bash
-make test          # unit and property tests with -race, random order (short differential run)
-make test-full     # includes the full 1M-operation differential test
+make test          # unit and property tests with -race, random order (short differential run, no Docker)
+make test-full     # also the full 1M-operation differential test and the Kafka integration tests (needs Docker)
 make lint          # go vet + golangci-lint
 make bench         # Go micro-benchmarks
 make bench-report  # full reproducible engine report (writes bench/results/)
 make loadtest      # end-to-end open-loop gRPC load test, 3 runs at 10k orders/s
+make bench-recovery  # replay of a 1M-event log from Kafka (needs Docker)
+make chaos         # kill -9 the engine and Kafka under load and verify (needs Docker)
 make proto         # regenerate gen/ from proto/ (needs buf and the protoc-gen-go plugins)
 
 make up            # docker compose: kafka, redis, postgres, prometheus, gateway
@@ -111,10 +123,12 @@ The local PostgreSQL password in `deploy/docker-compose.yml` is a development-on
 ```
 cmd/gateway          order gateway: gRPC API, /healthz, /readyz, /metrics
 cmd/loadgen          open-loop gRPC load generator
+cmd/logtool          event log checks: replay and continuity, snapshot-vs-clean comparison, generator
 proto/               Protobuf API (buf managed); gen/ holds the generated Go code
 internal/gateway     gRPC server, validation, idempotency
 internal/pipeline    gateway-to-engine rings, engine goroutine, dispatcher, report hub
 internal/ring        lock-free SPSC and MPSC bounded queues
+internal/eventlog    Kafka publisher, snapshots, follower, recovery (kafkatest: Docker broker for tests)
 internal/benchenv    environment capture for benchmark results
 internal/engine      matching engine and order book
 internal/refbook     naive reference implementation (differential tests, benchmarks)
@@ -124,7 +138,8 @@ bench/               benchmark tools; results/ holds raw JSON and text output
 deploy/              docker compose and Prometheus config
 docs/adr             architecture decision records
 docs/plan            per-phase plans and task lists
-scripts/             helper scripts (bench.sh)
+scripts/             bench.sh, loadtest.sh, bench-recovery.sh, chaos/ (engine and Kafka kill tests)
+docs/runbook.md      how to run replay checks and chaos tests
 ```
 
 ## Relationship to cube_test

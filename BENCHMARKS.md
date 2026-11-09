@@ -116,3 +116,76 @@ Server-side histograms (`mx_engine_*`, upper bucket bounds, so values are "at mo
 - Loopback on one machine says nothing about a real network.
 - Only one request mix and one rate were measured. Higher rates and saturation behaviour are not characterised yet.
 - The idempotency records are in memory and unbounded (ADR 0006); long runs grow gateway memory.
+
+## Phase 3: event log, recovery and chaos
+
+Same machine as above (Apple M5, 10 logical CPUs, darwin/arm64, go1.27.3, default GOGC, GOMAXPROCS 10). Kafka is a single-node apache/kafka 3.9.0 in Docker on the same laptop, so every Kafka number here is loopback-to-a-local-container and says nothing about a real cluster, a real network, replication or disk behaviour at scale.
+
+### 3.1 Gateway latency with the event log in the path
+
+Same open-loop method as phase 2 (10,000 orders/s, 5 s warm-up, 30 s measured, 3 runs, fresh gateway and fresh log each run), now with `-kafka` enabled: every command's events go through the output ring, the bounded queue and an acknowledged Kafka write. Clients are acknowledged **before** Kafka acknowledges (ADR 0007), so Kafka latency is not in the request path; the event log still costs CPU and memory bandwidth on the same host.
+
+| Run | achieved/s | p50 µs | p90 µs | p99 µs | p99.9 µs | max µs | errors |
+|---|---|---|---|---|---|---|---|
+| 1 | 10,000 | 91 | 150 | 793 | 10,623 | 30,159 | 0 |
+| 2 | 10,000 | 93 | 155 | 2,283 | 13,791 | 38,911 | 0 |
+| 3 | 10,000 | 91 | 152 | 1,695 | 9,455 | 21,151 | 0 |
+
+Compared with phase 2 without the log (p50 81 to 85 µs, p99 1.65 to 2.75 ms) p50 is about 10 µs higher and p99 is in the same range; the tail (p99.9, max) is noisy for the same unexplained reasons as before and I do not claim a difference there.
+
+Event publish lag (`mx_eventlog_publish_lag_seconds`: engine stamps the event, Kafka acknowledges its batch; upper bucket bounds): p50 at most 6.4 ms, p99 at most 12.8 ms, p99.9 between 25.6 and 102.4 ms. The producer linger is 5 ms, which dominates the median. Linger and batching are the phase 8 experiment. At the end of each run the engine's last sequence equalled the Kafka-acknowledged sequence, and no order was refused.
+
+Raw: `bench/results/gateway-kafka-10000rps-20261109T055217Z-10a6a36-run{1,2,3}.json` (+ `.hgrm`), `gateway-metrics-kafka-...txt`. Reproduce: `KAFKA=localhost:9092 scripts/loadtest.sh`.
+
+### 3.2 Recovery time
+
+Target (requirements 5.1): replay of 1M events in under 10 seconds.
+
+**Clean replay of a 1,000,000-event log from Kafka** (fetch, protobuf decode, validate, rebuild state), `scripts/bench-recovery.sh`, commit `10a6a36`, 5 runs:
+
+| Run | total | events/s |
+|---|---|---|
+| 1 | 551 ms | 1.84M |
+| 2 | 484 ms | 2.10M |
+| 3 | 484 ms | 2.10M |
+| 4 | 559 ms | 1.81M |
+| 5 | 457 ms | 2.22M |
+
+Verdict: **met**, with about 20x margin, on this setup. The replayed book hash (`6f8f2f92bb284ceb`) is identical to the hash of the book that produced the events. The events came from the seeded mixed workload (about 1.3 events per command, about 400 resting orders at the end); a log with very deep books or very different shapes would behave differently.
+
+The state-rebuild floor with no Kafka and no decoding (`BenchmarkApplyEventsReplay`, 918,895 events per operation): 33.2 to 35.6 ms, 25.8M to 27.7M events/s, 21 allocations per operation (setup only). Most of the recovery time above is therefore Kafka fetch and protobuf decoding, not the order book.
+
+**Recovery in the chaos run** (engine killed with SIGKILL under 5,000 orders/s; see 3.3): newest snapshot at sequence 80,001, replay of the 14,883 events after it, recovered at sequence 94,884: snapshot load 1 ms, replay 24 ms, **35 ms total**; 144 ms from process start to `/readyz`. The book held only about 400 orders, so this says little about snapshot load time for a large book; that is not characterised.
+
+### 3.3 Chaos tests
+
+Each script ran **once** on the commit shown (not repeated, so no spread). Raw output is in `bench/results/chaos-*.txt`.
+
+**Engine kill -9 under load** (`scripts/chaos/engine-kill.sh`, commit `5293df6`): 5,000 orders/s for 40 s, SIGKILL at about 15 s, immediate restart.
+
+| Check | Result |
+|---|---|
+| Recovered state at restart | from snapshot (seq 80,001) plus 14,883 replayed events, seq 94,884 |
+| Snapshot recovery vs clean replay of the whole log (`logtool compare`) | same book hash (`703fd6a718cbcfb5`) and same last sequence (267,073): **equal** |
+| Engine's final sequence vs last sequence in the log | 267,073 = 267,073 |
+| The log across the restart | replays cleanly with no gap or duplicate; everything the restarted engine produced applied on top of the recovered state |
+| Client-visible effect | 5,052 of 200,000 requests failed `UNAVAILABLE` during the restart (about 1 s); p50 80 µs, p99 1.15 ms, p99.9 5.5 ms |
+| Events at risk in a crash | the unacknowledged window sampled just before the kill was at most 119 events (an upper bound, about 24 ms of flow at this rate). **The events actually lost in the crash were not measured**, only the window they live in |
+
+**Kafka kill -9 under load** (`scripts/chaos/kafka-kill.sh`, commit `55268bd`): 5,000 orders/s for 45 s, Kafka killed at 12 s and restarted 12 s later, load kept running throughout.
+
+| Check | Result |
+|---|---|
+| During the outage | the unacknowledged backlog reached the 4,096-batch watermark; the engine had advanced from seq 76,539 to 82,440 while Kafka acknowledged only up to 77,108 |
+| Load shedding | 92,683 of 225,000 requests (41%) were refused with explicit `RESOURCE_EXHAUSTED`, covering the outage and the time to drain the backlog afterwards; no other errors |
+| After recovery | engine last seq 123,277 = Kafka-acknowledged seq 123,277, zero publish errors |
+| No loss, no duplicate | clean replay of the log: 123,277 events in the log = last sequence 123,277, contiguous |
+| Latency while healthy | p50 66 µs, p99 0.89 ms |
+
+The same two failure modes are also asserted hermetically in `go test ./internal/eventlog` (Testcontainers; Kafka stopped and killed, engine crash and resume).
+
+### What these numbers do not say
+- One local single-node broker: no replication, no network, no multi-broker failover.
+- The crash tests prove consistency of the recovered state with the log. They do **not** make client acknowledgements durable: an order acknowledged to a client in the last tens of milliseconds before a crash can be missing after recovery (ADR 0007).
+- Idempotency records and report subscriptions are not recovered (ADR 0007), so after a restart pre-crash orders cannot be cancelled through the gateway by `client_order_id`.
+- Snapshot cost for a large book (millions of resting orders) and replay of a log with many more orders are not measured.
