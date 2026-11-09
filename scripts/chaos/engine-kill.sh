@@ -29,11 +29,12 @@ sleep "$((KILL_AFTER - 3))"
 # only in memory: they are what a crash loses. Sample that window before the kill.
 MAX_GAP=0
 for _ in 1 2 3 4 5 6; do
-  gap=$(( $(metric mx_engine_last_sequence) - $(metric mx_eventlog_acked_sequence) ))
+  acked=$(metric mx_eventlog_acked_sequence)   # read acked first, then the engine:
+  gap=$(( $(metric mx_engine_last_sequence) - acked ))  # so the gap is an upper bound, never negative
   [ "$gap" -gt "$MAX_GAP" ] && MAX_GAP=$gap
   sleep 0.5
 done
-say "KILL -9 the engine (unacknowledged window sampled before the kill: up to $MAX_GAP events)"
+say "KILL -9 the engine (largest unacknowledged window sampled before the kill: $MAX_GAP events (an upper bound))"
 kill -9 "$GW_PID"; wait "$GW_PID" 2>/dev/null || true; GW_PID=""
 
 say "restart the engine"
