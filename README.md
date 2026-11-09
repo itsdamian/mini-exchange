@@ -21,7 +21,7 @@ Client -> gateway (gRPC) -> idempotency check -> risk (Redis Lua, reserve funds)
 | Phase | Scope | State |
 |---|---|---|
 | 0 | Scaffold: module, CI, docker compose (Kafka, Redis, PostgreSQL, Prometheus) | done |
-| 1 | Engine core: order book, matching rules, reference implementation, property and differential tests, benchmarks | in progress |
+| 1 | Engine core: order book, matching rules, reference implementation, property and differential tests, benchmarks | done (see [BENCHMARKS.md](BENCHMARKS.md)) |
 | 2-9 | Gateway, event log and recovery, risk, ledger, market data, Kubernetes, optimization report, UI | not started |
 
 ## Quick start

@@ -1,0 +1,86 @@
+{
+  "scenario": "mixed",
+  "timestamp": "2026-11-09T04:31:03Z",
+  "commit": "d3e196b",
+  "hardware": "Apple M5 (10 logical CPUs)",
+  "os": "darwin/arm64",
+  "go_version": "go1.27.3",
+  "gomaxprocs": 10,
+  "gogc": "100 (default)",
+  "gomemlimit": "unset",
+  "seed": 7,
+  "timer_overhead_ns": {
+    "P50": 0,
+    "P90": 42,
+    "P99": 42,
+    "P999": 42,
+    "Max": 14047
+  },
+  "runs": [
+    {
+      "orders": 5000000,
+      "orders_per_sec": 11832611.149632834,
+      "latency_ns": {
+        "P50": 42,
+        "P90": 84,
+        "P99": 125,
+        "P999": 167,
+        "Max": 41695
+      },
+      "mallocs_during_run": 1,
+      "events_emitted": 6566327
+    },
+    {
+      "orders": 5000000,
+      "orders_per_sec": 11852397.364147248,
+      "latency_ns": {
+        "P50": 42,
+        "P90": 84,
+        "P99": 125,
+        "P999": 167,
+        "Max": 33631
+      },
+      "mallocs_during_run": 1,
+      "events_emitted": 6566327
+    },
+    {
+      "orders": 5000000,
+      "orders_per_sec": 11737011.147998633,
+      "latency_ns": {
+        "P50": 42,
+        "P90": 84,
+        "P99": 125,
+        "P999": 167,
+        "Max": 486399
+      },
+      "mallocs_during_run": 1,
+      "events_emitted": 6566327
+    },
+    {
+      "orders": 5000000,
+      "orders_per_sec": 11793856.3825453,
+      "latency_ns": {
+        "P50": 42,
+        "P90": 84,
+        "P99": 125,
+        "P999": 167,
+        "Max": 36351
+      },
+      "mallocs_during_run": 1,
+      "events_emitted": 6566327
+    },
+    {
+      "orders": 5000000,
+      "orders_per_sec": 11828066.049103625,
+      "latency_ns": {
+        "P50": 42,
+        "P90": 84,
+        "P99": 125,
+        "P999": 167,
+        "Max": 44959
+      },
+      "mallocs_during_run": 1,
+      "events_emitted": 6566327
+    }
+  ]
+}

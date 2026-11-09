@@ -1,0 +1,15 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/itsdamian/mini-exchange/internal/engine
+cpu: Apple M5
+BenchmarkApplyMixed-10        	48985089	        60.90 ns/op	  16419320 orders/s	       0 B/op	       0 allocs/op
+BenchmarkApplyMixed-10        	43186438	        63.14 ns/op	  15837665 orders/s	       0 B/op	       0 allocs/op
+BenchmarkApplyMixed-10        	49166600	        62.41 ns/op	  16022863 orders/s	       0 B/op	       0 allocs/op
+BenchmarkApplyDeepBook-10     	40440889	        74.81 ns/op	  13366851 orders/s	       2 B/op	       0 allocs/op
+BenchmarkApplyDeepBook-10     	40133779	        79.71 ns/op	  12545562 orders/s	       2 B/op	       0 allocs/op
+BenchmarkApplyDeepBook-10     	37493823	        81.52 ns/op	  12266818 orders/s	       1 B/op	       0 allocs/op
+BenchmarkReferenceMixed-10    	 1000000	      4347 ns/op	       4 B/op	       0 allocs/op
+BenchmarkReferenceMixed-10    	 1000000	      4372 ns/op	       4 B/op	       0 allocs/op
+BenchmarkReferenceMixed-10    	 1000000	      4376 ns/op	       4 B/op	       0 allocs/op
+PASS
+ok  	github.com/itsdamian/mini-exchange/internal/engine	36.786s
