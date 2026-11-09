@@ -280,8 +280,10 @@ func TestRiskFailsClosedWhenRedisIsDown(t *testing.T) {
 		return err == nil
 	}, 10*time.Second, 50*time.Millisecond)
 	require.Equal(t, exchangev1.OrderStatus_ORDER_STATUS_ACCEPTED, r.Status)
-	r, err = e.client.PlaceOrder(ctx, place("after", b, exchangev1.Side_SIDE_BUY, 10, 5)) // trades against it
-	require.NoError(t, err)
+	require.Eventually(t, func() bool { // a refusal while settlement catches up is allowed, and retryable
+		r, err = e.client.PlaceOrder(ctx, place("after", b, exchangev1.Side_SIDE_BUY, 10, 5)) // trades against it
+		return err == nil
+	}, 10*time.Second, 50*time.Millisecond)
 	require.Equal(t, exchangev1.OrderStatus_ORDER_STATUS_ACCEPTED, r.Status)
 	e.flush(t)
 

@@ -155,7 +155,7 @@ func (s *settler) run() {
 func (s *settler) apply(batch []Op, stopping bool) {
 	backoff := 20 * time.Millisecond
 	for attempt := 0; ; attempt++ {
-		err := s.exec(batch)
+		err := s.exec(batch, false)
 		if err == nil {
 			s.failing.Store(false)
 			s.fin.Add(uint64(len(batch)))
@@ -176,7 +176,7 @@ func (s *settler) apply(batch []Op, stopping bool) {
 
 // exec sends one batch: one Lua call per account (ops of an account stay in
 // order), all in one pipelined round trip.
-func (s *settler) exec(batch []Op) error {
+func (s *settler) exec(batch []Op, retried bool) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -212,16 +212,17 @@ func (s *settler) exec(batch []Op) error {
 		cmds[g] = settleScript.EvalSha(ctx, pipe, []string{balKey(a), s.c.seqKey(a)}, args...)
 	}
 	if _, err := pipe.Exec(ctx); err != nil {
-		for _, c := range cmds {
-			if c.Err() != nil && strings.HasPrefix(c.Err().Error(), "NOSCRIPT") {
-				// Redis lost its script cache (restart or SCRIPT FLUSH): reload, retry the batch.
-				if lerr := s.c.loadScripts(ctx); lerr != nil {
-					return lerr
-				}
-				break
-			}
+		if !noScript(cmds) || retried {
+			return err
 		}
-		return err
+		// Redis lost its script cache (restart or SCRIPT FLUSH). That heals at
+		// once, so reload and retry here instead of reporting a failure (which
+		// would make the gateway refuse orders for a backoff period). Ops
+		// already applied are skipped by their sequence.
+		if lerr := s.c.loadScripts(ctx); lerr != nil {
+			return lerr
+		}
+		return s.exec(batch, true)
 	}
 
 	now := time.Now().UnixNano()
@@ -254,4 +255,13 @@ func (s *settler) flush(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+func noScript(cmds []*redis.Cmd) bool {
+	for _, c := range cmds {
+		if c.Err() != nil && strings.HasPrefix(c.Err().Error(), "NOSCRIPT") {
+			return true
+		}
+	}
+	return false
 }
