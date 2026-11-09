@@ -77,6 +77,8 @@ func pipelineErr(err error) error {
 	switch {
 	case errors.Is(err, pipeline.ErrOverloaded):
 		return status.Error(codes.ResourceExhausted, "engine queue full, retry later")
+	case errors.Is(err, pipeline.ErrLogBacklogged):
+		return status.Error(codes.ResourceExhausted, "event log backed up or unavailable, retry later")
 	case errors.Is(err, pipeline.ErrStopped):
 		return status.Error(codes.Unavailable, "gateway is shutting down")
 	}
@@ -85,7 +87,7 @@ func pipelineErr(err error) error {
 
 // transient reports whether nothing was enqueued, so the key may be retried.
 func transient(err error) bool {
-	return errors.Is(err, pipeline.ErrOverloaded) || errors.Is(err, pipeline.ErrStopped)
+	return errors.Is(err, pipeline.ErrOverloaded) || errors.Is(err, pipeline.ErrLogBacklogged) || errors.Is(err, pipeline.ErrStopped)
 }
 
 // PlaceOrder implements the idempotent order entry RPC.

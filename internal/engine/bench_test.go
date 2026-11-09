@@ -55,3 +55,35 @@ func BenchmarkReferenceMixed(b *testing.B) {
 		out = ref.Apply(&c, out[:0])
 	}
 }
+
+// BenchmarkApplyEventsReplay measures rebuilding a book from recorded events
+// (the recovery path) with no Kafka and no decoding: the floor under recovery
+// time. Each iteration replays about one million events into a fresh book.
+func BenchmarkApplyEventsReplay(b *testing.B) {
+	cmds := enginetest.Generate(700_000, 7, enginetest.DefaultProfile())
+	src := engine.NewBook(engine.Config{MaxOrders: 4096, MaxLevels: 512})
+	var batches [][]engine.Event
+	events := 0
+	for i := range cmds {
+		c := cmds[i]
+		c.Ts = int64(i + 1)
+		evs := src.Apply(&c, nil)
+		events += len(evs)
+		batches = append(batches, evs)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		bk := engine.NewBook(engine.Config{MaxOrders: 4096, MaxLevels: 512})
+		for _, evs := range batches {
+			if err := bk.ApplyEvents(evs); err != nil {
+				b.Fatal(err)
+			}
+		}
+		if bk.Hash() != src.Hash() {
+			b.Fatal("replayed book differs")
+		}
+	}
+	b.ReportMetric(float64(events)*float64(b.N)/b.Elapsed().Seconds(), "events/s")
+	b.ReportMetric(float64(events), "events/op")
+}

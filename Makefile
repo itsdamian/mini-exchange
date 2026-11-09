@@ -1,13 +1,15 @@
-.PHONY: build test test-full lint proto bench bench-report loadtest up down smoke
+.PHONY: build test test-full lint proto bench bench-report bench-recovery loadtest chaos up down smoke
 
 build:
 	go build ./...
 
-# Fast: -short trims the 1M-op differential test to 100k. Random order, race detector.
+# Fast: -short trims the 1M-op differential test to 100k and skips the Kafka
+# (Docker) integration tests. Random order, race detector.
 test:
 	go test -race -shuffle=on -short ./...
 
-# Everything, including the full 1M-op differential test.
+# Everything, including the full 1M-op differential test and the Kafka
+# integration tests (needs Docker; they start and kill a real broker).
 test-full:
 	go test -race -shuffle=on ./...
 
@@ -27,6 +29,15 @@ bench:
 # Reproducible latency distribution; see scripts/bench.sh and BENCHMARKS.md.
 bench-report:
 	./scripts/bench.sh
+
+# Recovery-time benchmark: replay of a 1M-event log from Kafka (needs Docker).
+bench-recovery:
+	./scripts/bench-recovery.sh
+
+# Chaos tests against real processes and the compose Kafka (see docs/runbook.md).
+chaos:
+	./scripts/chaos/engine-kill.sh
+	./scripts/chaos/kafka-kill.sh
 
 # End-to-end open-loop load test (local gateway + loadgen); see scripts/loadtest.sh.
 loadtest:

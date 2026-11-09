@@ -1,0 +1,76 @@
+syntax = "proto3";
+
+package exchange.v1;
+
+import "exchange/v1/gateway.proto";
+
+// The engine event log. This is the system of record: engine state is a
+// snapshot plus a replay of these events (docs/adr/0007).
+//
+// Kafka layout: one topic per symbol with a single partition, so ordering is
+// total. ONE Kafka record is ONE EventBatch holding every event produced by
+// ONE engine command, which makes a command atomic in the log.
+
+enum EventType {
+  EVENT_TYPE_UNSPECIFIED = 0;
+  EVENT_TYPE_ORDER_ACCEPTED = 1;
+  EVENT_TYPE_ORDER_REJECTED = 2;
+  EVENT_TYPE_ORDER_CANCELED = 3;
+  EVENT_TYPE_TRADE_EXECUTED = 4;
+}
+
+// EngineEvent is one engine output event. Prices are integer ticks and
+// quantities integer units.
+message EngineEvent {
+  // Strictly increasing, contiguous per symbol, starting at 1.
+  uint64 sequence = 1;
+  EventType type = 2;
+  // Sequencer timestamp, unix nanoseconds.
+  int64 timestamp_ns = 3;
+  // ORDER_*: the order. TRADE_EXECUTED: the taker.
+  uint64 order_id = 4;
+  uint64 account_id = 5;
+  Side side = 6;
+  int64 price = 7;
+  int64 quantity = 8;
+  RejectReason reject_reason = 9;
+  // TRADE_EXECUTED only: the resting order.
+  uint64 maker_order_id = 10;
+  uint64 maker_account_id = 11;
+}
+
+message EventBatch {
+  // Schema version of this record. Consumers must reject unknown versions.
+  uint32 schema_version = 1;
+  string symbol = 2;
+  // Events of one command, in sequence order.
+  repeated EngineEvent events = 3;
+}
+
+// Snapshot is the periodic checkpoint of the order book. It only ever
+// contains events that Kafka has acknowledged, so it can never be ahead of
+// the log.
+message Snapshot {
+  uint32 schema_version = 1;
+  string symbol = 2;
+  // Sequence number of the last event applied.
+  uint64 last_sequence = 3;
+  // Kafka offset of the record holding last_sequence; replay resumes after it.
+  int64 log_offset = 4;
+  // Highest order id seen; the next id to assign is max_order_id + 1.
+  uint64 max_order_id = 5;
+  // engine.Book.Hash() of the snapshotted book, verified on load.
+  uint64 book_hash = 6;
+  int64 created_unix_ns = 7;
+  // Resting orders in priority order: asks best to worst, then bids best to
+  // worst, FIFO within a price level.
+  repeated SnapshotOrder orders = 8;
+}
+
+message SnapshotOrder {
+  uint64 order_id = 1;
+  uint64 account_id = 2;
+  Side side = 3;
+  int64 price = 4;
+  int64 quantity = 5;
+}

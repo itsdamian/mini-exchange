@@ -216,3 +216,96 @@ func TestStopDrainsAndRefusesNewWork(t *testing.T) {
 	}
 	require.ErrorIs(t, sub.Err(), pipeline.ErrStopped)
 }
+
+type fakeLog struct {
+	mu      sync.Mutex
+	batches [][]engine.Event
+	backlog bool
+}
+
+func (f *fakeLog) Append(evs []engine.Event) {
+	f.mu.Lock()
+	f.batches = append(f.batches, evs)
+	f.mu.Unlock()
+}
+
+func (f *fakeLog) Backlogged() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.backlog
+}
+
+func (f *fakeLog) snapshot() [][]engine.Event {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([][]engine.Event(nil), f.batches...)
+}
+
+func TestEventLogGetsOneContiguousBatchPerCommand(t *testing.T) {
+	fl := &fakeLog{}
+	p := newPipeline(t, pipeline.Config{Log: fl})
+	ctx := context.Background()
+
+	_, err := p.Submit(ctx, limit(1, engine.Sell, 100, 10), "a")
+	require.NoError(t, err)
+	_, err = p.Submit(ctx, limit(2, engine.Buy, 100, 4), "b") // accepted + trade
+	require.NoError(t, err)
+	_, err = p.Submit(ctx, limit(1, engine.Buy, 100, 0), "c") // rejected
+	require.NoError(t, err)
+	require.Eventually(t, func() bool { return len(fl.snapshot()) == 3 }, 5*time.Second, time.Millisecond)
+
+	bs := fl.snapshot()
+	require.Len(t, bs[0], 1)
+	require.Equal(t, engine.EvAccepted, bs[0][0].Kind)
+	require.Len(t, bs[1], 2, "a command's events stay together in one batch")
+	require.Equal(t, engine.EvAccepted, bs[1][0].Kind)
+	require.Equal(t, engine.EvTrade, bs[1][1].Kind)
+	require.Len(t, bs[2], 1)
+	require.Equal(t, engine.EvRejected, bs[2][0].Kind)
+
+	var seq uint64
+	for _, b := range bs {
+		for _, e := range b {
+			seq++
+			require.Equal(t, seq, e.Seq, "batches are in order and contiguous")
+		}
+	}
+}
+
+func TestBackloggedLogRefusesNewCommandsWithoutEnqueueing(t *testing.T) {
+	fl := &fakeLog{backlog: true}
+	p := newPipeline(t, pipeline.Config{Log: fl})
+	_, err := p.Submit(context.Background(), limit(1, engine.Buy, 100, 1), "x")
+	require.ErrorIs(t, err, pipeline.ErrLogBacklogged)
+	require.Zero(t, p.Stats().Accepted)
+
+	fl.mu.Lock()
+	fl.backlog = false
+	fl.mu.Unlock()
+	_, err = p.Submit(context.Background(), limit(1, engine.Buy, 100, 1), "x")
+	require.NoError(t, err, "accepted again as soon as the backlog clears")
+}
+
+func TestRestoredPipelineContinuesIDsSequenceAndLeaves(t *testing.T) {
+	// a book that already has history: one resting sell of 10 (order id 41)
+	book := engine.NewBook(engine.Config{MaxOrders: 16, MaxLevels: 4})
+	var out []engine.Event
+	for i := uint64(1); i <= 41; i++ {
+		c := engine.Command{Kind: engine.CmdPlace, Side: engine.Buy, Type: engine.Limit, TIF: engine.IOC, OrderID: i, AccountID: 9, Price: 5, Qty: 1, Ts: 1}
+		out = book.Apply(&c, out[:0])
+	}
+	c := engine.Command{Kind: engine.CmdPlace, Side: engine.Sell, Type: engine.Limit, TIF: engine.GTC, OrderID: 42, AccountID: 1, Price: 100, Qty: 10, Ts: 1}
+	book.Apply(&c, nil)
+	seqBefore := book.Seq()
+
+	p := newPipeline(t, pipeline.Config{Restore: &pipeline.Restored{Book: book, NextOrderID: 43}})
+	sub, _ := p.Subscribe(1)
+	ev, err := p.Submit(context.Background(), limit(2, engine.Buy, 100, 4), "after")
+	require.NoError(t, err)
+	require.Equal(t, uint64(43), ev.OrderID, "order ids continue after the recovered maximum")
+	require.Equal(t, seqBefore+1, ev.Seq, "sequence numbers continue without a gap")
+
+	r := recv(t, sub) // the pre-crash resting order gets a trade report
+	require.Equal(t, pipeline.ReportTrade, r.Type)
+	require.Equal(t, int64(6), r.Leaves, "leaves computed from the recovered quantity")
+}

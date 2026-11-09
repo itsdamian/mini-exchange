@@ -63,6 +63,10 @@ services:
       context: ..
       args:
         CMD: gateway
+    # Event log on Kafka (internal listener) and snapshots on a named volume.
+    command: ["-kafka", "kafka:19092", "-data-dir", "/data"]
+    volumes:
+      - gateway-data:/data
     ports:
       - "${GATEWAY_PORT:-18080}:8080"
       - "${GATEWAY_GRPC_PORT:-50051}:50051"
@@ -77,3 +81,6 @@ services:
         condition: service_healthy
       postgres:
         condition: service_healthy
+
+volumes:
+  gateway-data:

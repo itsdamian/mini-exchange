@@ -41,6 +41,8 @@ type Book struct {
 	bids []level
 	asks []level
 	seq  uint64
+
+	maxOrderID uint64 // highest order id seen by ApplyEvents / SetState
 }
 
 // NewBook returns an empty Book.
@@ -254,8 +256,19 @@ func (b *Book) cancel(c *Command, out []Event) []Event {
 		return b.reject(out, c, RejectUnknownOrder)
 	}
 	o := &b.slab[i]
-	levels := &b.bids
-	desc := false
+	qty, side, price := o.qty, o.side, o.price
+	b.unlink(i)
+	return b.emit(out, Event{
+		Kind: EvCanceled, Side: side, Ts: c.Ts,
+		OrderID: c.OrderID, AccountID: c.AccountID, Price: price, Qty: qty,
+	})
+}
+
+// unlink removes resting order i from its level (dropping the level if it
+// empties), from the index, and returns its slot to the free list.
+func (b *Book) unlink(i int32) {
+	o := &b.slab[i]
+	levels, desc := &b.bids, false
 	if o.side == Sell {
 		levels, desc = &b.asks, true
 	}
@@ -275,38 +288,37 @@ func (b *Book) cancel(c *Command, out []Event) []Event {
 		b.slab[o.next].prev = o.prev
 	}
 	lv.qty -= o.qty
-	qty, side, price := o.qty, o.side, o.price
 	if lv.head == nilIdx {
 		copy((*levels)[pos:], (*levels)[pos+1:])
 		*levels = (*levels)[:len(*levels)-1]
 	}
-	delete(b.index, c.OrderID)
+	delete(b.index, o.id)
 	b.release(i)
-	return b.emit(out, Event{
-		Kind: EvCanceled, Side: side, Ts: c.Ts,
-		OrderID: c.OrderID, AccountID: c.AccountID, Price: price, Qty: qty,
-	})
 }
 
 // rest inserts the remainder of a GTC limit order at the tail of its level.
 func (b *Book) rest(c *Command, qty int64) {
+	b.restOrder(c.Side, c.Price, c.OrderID, c.AccountID, qty)
+}
+
+func (b *Book) restOrder(side Side, price int64, id, account uint64, qty int64) {
 	idx := b.alloc()
 	b.slab[idx] = order{
-		id: c.OrderID, account: c.AccountID, price: c.Price, qty: qty,
-		prev: nilIdx, next: nilIdx, side: c.Side,
+		id: id, account: account, price: price, qty: qty,
+		prev: nilIdx, next: nilIdx, side: side,
 	}
-	b.index[c.OrderID] = idx
+	b.index[id] = idx
 
 	levels := &b.bids
 	desc := false
-	if c.Side == Sell {
+	if side == Sell {
 		levels, desc = &b.asks, true
 	}
-	pos, found := findLevel(*levels, c.Price, desc)
+	pos, found := findLevel(*levels, price, desc)
 	if !found {
 		*levels = append(*levels, level{})
 		copy((*levels)[pos+1:], (*levels)[pos:])
-		(*levels)[pos] = level{price: c.Price, head: nilIdx, tail: nilIdx}
+		(*levels)[pos] = level{price: price, head: nilIdx, tail: nilIdx}
 	}
 	lv := &(*levels)[pos]
 	if lv.tail == nilIdx {

@@ -35,23 +35,45 @@ var (
 	// ErrOverloaded means the input ring or the in-flight limit is full. The
 	// request was NOT enqueued; the gateway sheds load with an explicit error.
 	ErrOverloaded = errors.New("pipeline: overloaded")
+	// ErrLogBacklogged means the event log is backed up (Kafka slow or down) or
+	// has failed. Orders are refused rather than accepted without a way to log
+	// them: nothing is dropped silently. Retry later.
+	ErrLogBacklogged = errors.New("pipeline: event log backed up or unavailable")
 	// ErrStopped means the pipeline is shutting down.
 	ErrStopped = errors.New("pipeline: stopped")
 )
 
+// EventLog receives the events of every command, one batch per command, in
+// sequence order, from the dispatcher goroutine.
+type EventLog interface {
+	// Append takes ownership of evs.
+	Append(evs []engine.Event)
+	// Backlogged reports that new commands must be refused.
+	Backlogged() bool
+}
+
+// Restored is engine state recovered from the event log.
+type Restored struct {
+	Book        *engine.Book
+	NextOrderID uint64 // the first order id to assign
+}
+
 // Config configures a Pipeline. Zero values get defaults.
 type Config struct {
 	Book         engine.Config
-	InputSize    int // MPSC ring capacity, power of two (default 65536)
-	OutputSize   int // SPSC ring capacity, power of two (default 65536)
-	MaxInFlight  int // concurrent Submit calls (default 32768)
-	ReportBuffer int // per-subscriber report buffer (default 4096)
+	Restore      *Restored // start from recovered state instead of an empty book
+	Log          EventLog  // nil: events are not persisted
+	InputSize    int       // MPSC ring capacity, power of two (default 65536)
+	OutputSize   int       // SPSC ring capacity, power of two (default 65536)
+	MaxInFlight  int       // concurrent Submit calls (default 32768)
+	ReportBuffer int       // per-subscriber report buffer (default 4096)
 	Registerer   prometheus.Registerer
 }
 
 // Stats are cumulative counters maintained by the dispatcher.
 type Stats struct {
 	Accepted, Rejected, Canceled, Trades uint64
+	LastSeq                              uint64 // last event sequence the dispatcher handled
 }
 
 type inItem struct {
@@ -63,6 +85,7 @@ type inItem struct {
 type outItem struct {
 	ev     engine.Event
 	ticket uint32 // non-zero on the first event of a command
+	last   bool   // last event of its command
 }
 
 const (
@@ -118,18 +141,20 @@ type Pipeline struct {
 
 	inPark, outPark *parker
 	hub             *hub
+	log             EventLog
 
 	base     time.Time
 	baseUnix int64
 	nextID   uint64 // engine goroutine only
 
-	live map[uint64]liveOrder // dispatcher goroutine only
+	live  map[uint64]liveOrder // dispatcher goroutine only
+	batch []engine.Event       // dispatcher goroutine only: events of the command being assembled
 
 	closed     atomic.Bool
 	engineDone atomic.Bool
 	wg         sync.WaitGroup
 
-	accepted, rejected, canceled, trades atomic.Uint64
+	accepted, rejected, canceled, trades, lastSeq atomic.Uint64
 
 	queueWait  prometheus.Histogram
 	matchTime  prometheus.Histogram
@@ -160,9 +185,17 @@ func New(cfg Config) *Pipeline {
 	f := promauto.With(reg)
 	buckets := prometheus.ExponentialBuckets(1e-7, 2, 24) // 100 ns .. ~0.8 s
 
+	book := engine.NewBook(cfg.Book)
+	var nextID uint64
+	if cfg.Restore != nil {
+		book, nextID = cfg.Restore.Book, cfg.Restore.NextOrderID-1
+	}
+
 	now := time.Now()
 	p := &Pipeline{
-		book:     engine.NewBook(cfg.Book),
+		book:     book,
+		log:      cfg.Log,
+		nextID:   nextID,
 		in:       ring.NewMPSC[inItem](cfg.InputSize),
 		out:      ring.NewSPSC[outItem](cfg.OutputSize),
 		slots:    make([]slot, cfg.MaxInFlight+1),
@@ -183,6 +216,14 @@ func New(cfg Config) *Pipeline {
 			Name: "mx_pipeline_overloaded_total", Help: "Commands refused because the input ring or in-flight limit was full.",
 		}),
 	}
+	// Orders already resting after a recovery have no client label, but the
+	// dispatcher still needs their remaining quantity to compute leaves.
+	book.Orders(func(side engine.Side, _ int64, id, account uint64, qty int64) {
+		p.live[id] = liveOrder{account: account, side: side, remaining: qty}
+	})
+	f.NewGaugeFunc(prometheus.GaugeOpts{Name: "mx_engine_last_sequence", Help: "Last engine event sequence handled by the dispatcher."},
+		func() float64 { return float64(p.lastSeq.Load()) })
+	p.lastSeq.Store(book.Seq())
 	for i := 1; i <= cfg.MaxInFlight; i++ {
 		p.slots[i].ch = make(chan engine.Event, 1)
 		p.free <- uint32(i)
@@ -197,7 +238,7 @@ func (p *Pipeline) now() int64 { return int64(time.Since(p.base)) }
 
 // Stats returns the cumulative counters.
 func (p *Pipeline) Stats() Stats {
-	return Stats{p.accepted.Load(), p.rejected.Load(), p.canceled.Load(), p.trades.Load()}
+	return Stats{p.accepted.Load(), p.rejected.Load(), p.canceled.Load(), p.trades.Load(), p.lastSeq.Load()}
 }
 
 // Subscribe returns a stream of execution reports for account, starting now.
@@ -215,6 +256,10 @@ func (p *Pipeline) Subscribe(account uint64) (*Subscription, error) {
 func (p *Pipeline) Submit(ctx context.Context, cmd engine.Command, clientOrderID string) (engine.Event, error) {
 	if p.closed.Load() {
 		return engine.Event{}, ErrStopped
+	}
+	if p.log != nil && p.log.Backlogged() {
+		p.overloaded.Inc()
+		return engine.Event{}, ErrLogBacklogged
 	}
 	var t uint32
 	select {
@@ -318,7 +363,7 @@ func (p *Pipeline) engineLoop() {
 		p.matchTime.Observe(float64(end-start) / 1e9)
 
 		for i := range evs {
-			o := outItem{ev: evs[i]}
+			o := outItem{ev: evs[i], last: i == len(evs)-1}
 			if i == 0 {
 				o.ticket = it.ticket
 			}
@@ -373,6 +418,17 @@ func (p *Pipeline) dispatchLoop() {
 
 func (p *Pipeline) handle(it *outItem) {
 	ev := &it.ev
+	p.lastSeq.Store(ev.Seq)
+	if p.log != nil {
+		if p.batch == nil {
+			p.batch = make([]engine.Event, 0, 4)
+		}
+		p.batch = append(p.batch, *ev)
+		if it.last {
+			p.log.Append(p.batch)
+			p.batch = nil
+		}
+	}
 	var client string
 	if it.ticket != 0 {
 		client = p.slots[it.ticket].client // read before the ticket is released
