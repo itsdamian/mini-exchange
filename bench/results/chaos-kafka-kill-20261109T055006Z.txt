@@ -1,0 +1,30 @@
+ Container mini-exchange-kafka-1 Running 
+ Container mini-exchange-kafka-1 Waiting 
+ Container mini-exchange-kafka-1 Healthy 
+
+== symbol CHAOS-20261109T055006Z, work dir /var/folders/dn/1j8rffkd0bb_q5kt519hb9jh0000gn/T//mx-chaos.Bm2nzb ==
+
+== start load: 5000 req/s for 45s ==
+
+== KILL -9 Kafka (acked seq 76453, engine seq 76539) ==
+while Kafka is down: pending batches=4096, engine seq=82440, acked seq=77108, refused=38098
+
+== start Kafka again ==
+
+== wait for the load to finish ==
+target=localhost:50081 rate=5000/s measured=45s warmup=2s conns=4 commit=55268bd hw="Apple M5 (10 logical CPUs)" go1.27.3 GOMAXPROCS=10
+completed=225000 achieved=5000/s errors=map[ResourceExhausted:92683]
+latency (us, from intended send time): p50=66 p90=131 p99=887 p99.9=8179 max=30367
+loadgen scheduler lag (us): p50=1 p99=43 p99.9=1206 max=16575
+  cancel_ORDER_STATUS_CANCELED                            27852
+  cancel_ORDER_STATUS_REJECTED_REJECT_REASON_UNKNOWN_ORDER 48795
+  place_ORDER_STATUS_ACCEPTED                             55050
+  place_ORDER_STATUS_REJECTED_REJECT_REASON_INVALID_PRICE 193
+  place_ORDER_STATUS_REJECTED_REJECT_REASON_INVALID_QUANTITY 427
+engine last seq=123277, Kafka-acked seq=123277, publish errors=0
+
+== verify against the log ==
+clean-replay       last_seq=123277 events=123277 batches=93411 resting=807 book_hash=2a646a19d6e6718e total=145.4ms replay=126.7ms 972894 events/s
+log last seq=123277, events in log=123277 (must equal the last seq: nothing lost, nothing duplicated)
+
+PASS: Kafka kill -9, no event lost or duplicated

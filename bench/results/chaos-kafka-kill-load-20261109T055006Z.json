@@ -1,0 +1,45 @@
+{
+  "timestamp": "2026-11-09T05:50:55Z",
+  "commit": "55268bd",
+  "hardware": "Apple M5 (10 logical CPUs)",
+  "os": "darwin/arm64",
+  "go_version": "go1.27.3",
+  "gomaxprocs": 10,
+  "gogc": "100 (default)",
+  "gomemlimit": "unset",
+  "note": "chaos kafka-kill",
+  "target": "localhost:50081",
+  "rate_per_sec": 5000,
+  "measured_seconds": 45,
+  "warmup_seconds": 2,
+  "grpc_connections": 4,
+  "seed": 7,
+  "measured_requests": 225000,
+  "completed": 225000,
+  "errors_by_grpc_code": {
+    "ResourceExhausted": 92683
+  },
+  "outcomes": {
+    "cancel_ORDER_STATUS_CANCELED": 27852,
+    "cancel_ORDER_STATUS_REJECTED_REJECT_REASON_UNKNOWN_ORDER": 48795,
+    "place_ORDER_STATUS_ACCEPTED": 55050,
+    "place_ORDER_STATUS_REJECTED_REJECT_REASON_INVALID_PRICE": 193,
+    "place_ORDER_STATUS_REJECTED_REJECT_REASON_INVALID_QUANTITY": 427
+  },
+  "achieved_completions_per_sec": 5000.007472233389,
+  "latency_us_from_intended_send_time": {
+    "P50": 66,
+    "P90": 131,
+    "P99": 887,
+    "P999": 8179,
+    "Max": 30367
+  },
+  "scheduler_lag_us": {
+    "P50": 1,
+    "P90": 4,
+    "P99": 43,
+    "P999": 1206,
+    "Max": 16575
+  },
+  "latency_distribution_file": "bench/results/chaos-kafka-kill-load-20261109T055006Z.json.hgrm"
+}

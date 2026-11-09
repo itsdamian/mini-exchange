@@ -1,0 +1,45 @@
+{
+  "timestamp": "2026-11-09T05:51:55Z",
+  "commit": "5293df6",
+  "hardware": "Apple M5 (10 logical CPUs)",
+  "os": "darwin/arm64",
+  "go_version": "go1.27.3",
+  "gomaxprocs": 10,
+  "gogc": "100 (default)",
+  "gomemlimit": "unset",
+  "note": "chaos engine-kill",
+  "target": "localhost:50081",
+  "rate_per_sec": 5000,
+  "measured_seconds": 40,
+  "warmup_seconds": 2,
+  "grpc_connections": 4,
+  "seed": 7,
+  "measured_requests": 200000,
+  "completed": 200000,
+  "errors_by_grpc_code": {
+    "Unavailable": 5052
+  },
+  "outcomes": {
+    "cancel_ORDER_STATUS_CANCELED": 64533,
+    "cancel_ORDER_STATUS_REJECTED_REJECT_REASON_UNKNOWN_ORDER": 2247,
+    "place_ORDER_STATUS_ACCEPTED": 126662,
+    "place_ORDER_STATUS_REJECTED_REJECT_REASON_INVALID_PRICE": 472,
+    "place_ORDER_STATUS_REJECTED_REJECT_REASON_INVALID_QUANTITY": 1034
+  },
+  "achieved_completions_per_sec": 5000.0180209399505,
+  "latency_us_from_intended_send_time": {
+    "P50": 80,
+    "P90": 151,
+    "P99": 1148,
+    "P999": 5487,
+    "Max": 13639
+  },
+  "scheduler_lag_us": {
+    "P50": 1,
+    "P90": 4,
+    "P99": 55,
+    "P999": 1195,
+    "Max": 5723
+  },
+  "latency_distribution_file": "bench/results/chaos-engine-kill-load-20261109T055107Z.json.hgrm"
+}

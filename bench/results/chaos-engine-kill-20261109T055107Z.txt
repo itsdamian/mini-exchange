@@ -1,0 +1,39 @@
+ Container mini-exchange-kafka-1 Running 
+ Container mini-exchange-kafka-1 Waiting 
+ Container mini-exchange-kafka-1 Healthy 
+
+== symbol CHAOS-20261109T055107Z, work dir /var/folders/dn/1j8rffkd0bb_q5kt519hb9jh0000gn/T//mx-chaos.hbWVqB ==
+
+== start gateway (first life) ==
+fresh start: last_seq=0 total_ms=8
+
+== start load: 5000 req/s for 40s ==
+
+== KILL -9 the engine (largest unacknowledged window sampled before the kill: 119 events (an upper bound)) ==
+
+== restart the engine ==
+recovered: from_snapshot=True snapshot_seq=80001 replayed_events=14883 last_seq=94884 book_hash=06072486f443e553 resting=436
+recovery time: snapshot_load=1ms replay=24ms total=35ms ; process start to /readyz: 144ms
+
+== wait for the load to finish ==
+target=localhost:50081 rate=5000/s measured=40s warmup=2s conns=4 commit=5293df6 hw="Apple M5 (10 logical CPUs)" go1.27.3 GOMAXPROCS=10
+completed=200000 achieved=5000/s errors=map[Unavailable:5052]
+latency (us, from intended send time): p50=80 p90=151 p99=1148 p99.9=5487 max=13639
+loadgen scheduler lag (us): p50=1 p99=55 p99.9=1195 max=5723
+  cancel_ORDER_STATUS_CANCELED                            64533
+  cancel_ORDER_STATUS_REJECTED_REJECT_REASON_UNKNOWN_ORDER 2247
+  place_ORDER_STATUS_ACCEPTED                             126662
+  place_ORDER_STATUS_REJECTED_REJECT_REASON_INVALID_PRICE 472
+  place_ORDER_STATUS_REJECTED_REJECT_REASON_INVALID_QUANTITY 1034
+
+== graceful stop (flush + final snapshot) ==
+
+== verify against the log ==
+clean-replay       last_seq=267073 events=267073 batches=202596 resting=805 book_hash=703fd6a718cbcfb5 total=205.6ms replay=190.9ms 1398677 events/s
+clean-replay       last_seq=267073 events=267073 batches=202596 resting=805 book_hash=703fd6a718cbcfb5 total=212.1ms replay=199.4ms 1339677 events/s
+snapshot+replay    last_seq=267073 events=0 batches=0 resting=805 book_hash=703fd6a718cbcfb5 total=50.3ms replay=0.0ms (from snapshot at seq 267073)
+OK: snapshot recovery equals clean replay
+engine final seq=267073, log last seq=267073
+recovered at restart: seq 94884, hash 06072486f443e553
+
+PASS: engine kill -9 recovery
