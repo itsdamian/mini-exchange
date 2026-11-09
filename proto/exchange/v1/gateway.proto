@@ -1,0 +1,141 @@
+syntax = "proto3";
+
+package exchange.v1;
+
+// Prices are integer ticks and quantities are integer units. There is no
+// floating point anywhere in the API.
+
+// OrderGatewayService is the client-facing order entry API.
+service OrderGatewayService {
+  // PlaceOrder submits an order and returns once the engine has accepted or
+  // rejected it. client_order_id (scoped to account_id) is the idempotency
+  // key: a retry with the same key returns the original result and never
+  // creates a second order. Fills arrive on StreamExecutionReports.
+  rpc PlaceOrder(PlaceOrderRequest) returns (PlaceOrderResponse);
+
+  // CancelOrder cancels a resting order identified by the client_order_id it
+  // was placed with. Retrying returns the original result.
+  rpc CancelOrder(CancelOrderRequest) returns (CancelOrderResponse);
+
+  // StreamExecutionReports streams execution reports for one account,
+  // starting from the moment of subscription (no history is replayed). The
+  // stream is ended with RESOURCE_EXHAUSTED if the client reads too slowly.
+  rpc StreamExecutionReports(StreamExecutionReportsRequest) returns (stream StreamExecutionReportsResponse);
+}
+
+enum Side {
+  SIDE_UNSPECIFIED = 0;
+  SIDE_BUY = 1;
+  SIDE_SELL = 2;
+}
+
+enum OrderType {
+  ORDER_TYPE_UNSPECIFIED = 0;
+  ORDER_TYPE_LIMIT = 1;
+  ORDER_TYPE_MARKET = 2;
+}
+
+enum TimeInForce {
+  TIME_IN_FORCE_UNSPECIFIED = 0;
+  // Good till cancelled: the unfilled remainder rests on the book.
+  TIME_IN_FORCE_GTC = 1;
+  // Immediate or cancel: the unfilled remainder is cancelled.
+  TIME_IN_FORCE_IOC = 2;
+}
+
+enum RejectReason {
+  REJECT_REASON_UNSPECIFIED = 0;
+  REJECT_REASON_INVALID_PRICE = 1;
+  REJECT_REASON_INVALID_QUANTITY = 2;
+  REJECT_REASON_UNKNOWN_ORDER = 3;
+  REJECT_REASON_INSUFFICIENT_FUNDS = 4;
+  REJECT_REASON_RATE_LIMITED = 5;
+  REJECT_REASON_INVALID_ORDER = 6;
+  REJECT_REASON_DUPLICATE_ORDER_ID = 7;
+}
+
+enum OrderStatus {
+  ORDER_STATUS_UNSPECIFIED = 0;
+  ORDER_STATUS_ACCEPTED = 1;
+  ORDER_STATUS_REJECTED = 2;
+  ORDER_STATUS_CANCELED = 3;
+}
+
+message PlaceOrderRequest {
+  // Mandatory idempotency key, unique per account. 1 to 64 printable ASCII characters.
+  string client_order_id = 1;
+  uint64 account_id = 2;
+  string symbol = 3;
+  Side side = 4;
+  OrderType type = 5;
+  // Ignored for MARKET orders.
+  TimeInForce time_in_force = 6;
+  // Limit price in ticks (> 0 for LIMIT).
+  int64 price = 7;
+  // Quantity in units (> 0).
+  int64 quantity = 8;
+}
+
+message PlaceOrderResponse {
+  string client_order_id = 1;
+  // Engine-assigned order id; 0 when the order was rejected.
+  uint64 order_id = 2;
+  OrderStatus status = 3;
+  RejectReason reject_reason = 4;
+  // Engine event sequence number of the accept or reject event.
+  uint64 sequence = 5;
+}
+
+message CancelOrderRequest {
+  // The client_order_id the order was placed with.
+  string client_order_id = 1;
+  uint64 account_id = 2;
+  string symbol = 3;
+}
+
+message CancelOrderResponse {
+  string client_order_id = 1;
+  uint64 order_id = 2;
+  OrderStatus status = 3;
+  RejectReason reject_reason = 4;
+  // Quantity removed from the book by the cancel.
+  int64 canceled_quantity = 5;
+  uint64 sequence = 6;
+}
+
+message StreamExecutionReportsRequest {
+  uint64 account_id = 1;
+}
+
+message StreamExecutionReportsResponse {
+  ExecutionReport report = 1;
+}
+
+enum ExecutionType {
+  EXECUTION_TYPE_UNSPECIFIED = 0;
+  EXECUTION_TYPE_NEW = 1;
+  EXECUTION_TYPE_TRADE = 2;
+  EXECUTION_TYPE_CANCELED = 3;
+  EXECUTION_TYPE_REJECTED = 4;
+}
+
+message ExecutionReport {
+  ExecutionType type = 1;
+  uint64 account_id = 2;
+  uint64 order_id = 3;
+  // Empty when the order did not come through this gateway instance.
+  string client_order_id = 4;
+  Side side = 5;
+  // NEW: order price (0 for MARKET). TRADE: execution price. CANCELED: order price.
+  int64 price = 6;
+  // NEW: accepted quantity. TRADE: executed quantity. CANCELED: cancelled quantity.
+  int64 quantity = 7;
+  // Quantity still open on the order after this report.
+  int64 leaves_quantity = 8;
+  // TRADE only: true if this account's order was the resting (maker) side.
+  bool is_maker = 9;
+  RejectReason reject_reason = 10;
+  // Engine event sequence number and sequencer timestamp (unix nanoseconds).
+  uint64 sequence = 11;
+  int64 timestamp_ns = 12;
+}

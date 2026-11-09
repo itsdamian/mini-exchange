@@ -1,4 +1,4 @@
-.PHONY: build test test-full lint bench bench-report up down smoke
+.PHONY: build test test-full lint proto bench bench-report loadtest up down smoke
 
 build:
 	go build ./...
@@ -15,6 +15,11 @@ lint:
 	go vet ./...
 	golangci-lint run
 
+# Regenerate gen/ from proto/ (needs buf, protoc-gen-go, protoc-gen-go-grpc on PATH).
+proto:
+	buf lint
+	buf generate
+
 # Go micro-benchmarks (ns/op, allocs/op).
 bench:
 	go test -run '^$$' -bench . -benchmem -benchtime 2s ./internal/engine
@@ -22,6 +27,10 @@ bench:
 # Reproducible latency distribution; see scripts/bench.sh and BENCHMARKS.md.
 bench-report:
 	./scripts/bench.sh
+
+# End-to-end open-loop load test (local gateway + loadgen); see scripts/loadtest.sh.
+loadtest:
+	./scripts/loadtest.sh
 
 up:
 	docker compose -f deploy/docker-compose.yml up -d --build --wait

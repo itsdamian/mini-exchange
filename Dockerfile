@@ -14,5 +14,5 @@ RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /out/service /service
 USER nonroot:nonroot
-EXPOSE 8080
+EXPOSE 8080 50051
 ENTRYPOINT ["/service"]

@@ -65,6 +65,7 @@ services:
         CMD: gateway
     ports:
       - "${GATEWAY_PORT:-18080}:8080"
+      - "${GATEWAY_GRPC_PORT:-50051}:50051"
     healthcheck:
       # distroless has no shell or curl: the binary probes itself is overkill
       # for phase 0, so readiness is checked from outside by `make smoke`.

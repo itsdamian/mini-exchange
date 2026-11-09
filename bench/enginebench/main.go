@@ -17,14 +17,12 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"os/exec"
 	"runtime"
-	"runtime/debug"
-	"strings"
 	"time"
 
 	"github.com/HdrHistogram/hdrhistogram-go"
 
+	"github.com/itsdamian/mini-exchange/internal/benchenv"
 	"github.com/itsdamian/mini-exchange/internal/engine"
 	"github.com/itsdamian/mini-exchange/internal/enginetest"
 )
@@ -42,15 +40,9 @@ type runResult struct {
 }
 
 type result struct {
-	Scenario    string      `json:"scenario"`
-	Timestamp   string      `json:"timestamp"`
-	Commit      string      `json:"commit"`
-	Hardware    string      `json:"hardware"`
-	OS          string      `json:"os"`
-	GoVersion   string      `json:"go_version"`
-	GOMAXPROCS  int         `json:"gomaxprocs"`
-	GOGC        string      `json:"gogc"`
-	GOMEMLIMIT  string      `json:"gomemlimit"`
+	Scenario  string `json:"scenario"`
+	Timestamp string `json:"timestamp"`
+	benchenv.Env
 	Seed        uint64      `json:"seed"`
 	TimerCostNs percentiles `json:"timer_overhead_ns"`
 	Runs        []runResult `json:"runs"`
@@ -77,9 +69,7 @@ func main() {
 
 	res := result{
 		Scenario: *scenario, Timestamp: time.Now().UTC().Format(time.RFC3339),
-		Commit: gitCommit(), Hardware: hardware(), OS: runtime.GOOS + "/" + runtime.GOARCH,
-		GoVersion: runtime.Version(), GOMAXPROCS: runtime.GOMAXPROCS(0),
-		GOGC: envOr("GOGC", "100 (default)"), GOMEMLIMIT: envOr("GOMEMLIMIT", "unset"),
+		Env:  benchenv.Capture(),
 		Seed: *seed, TimerCostNs: timerCost(),
 	}
 
@@ -164,47 +154,4 @@ func printReport(r *result) {
 		l := x.LatencyNs
 		fmt.Printf("%-4d %12.0f %8d %8d %8d %8d %10d %8d\n", i+1, x.OrdersPerSec, l.P50, l.P90, l.P99, l.P999, l.Max, x.Mallocs)
 	}
-}
-
-func envOr(k, d string) string {
-	if v := os.Getenv(k); v != "" {
-		return v
-	}
-	return d
-}
-
-func gitCommit() string {
-	rev, err := exec.Command("git", "rev-parse", "--short", "HEAD").Output()
-	if err != nil {
-		if bi, ok := debug.ReadBuildInfo(); ok {
-			for _, s := range bi.Settings {
-				if s.Key == "vcs.revision" {
-					return s.Value
-				}
-			}
-		}
-		return "unknown"
-	}
-	c := strings.TrimSpace(string(rev))
-	if st, err := exec.Command("git", "status", "--porcelain", "--untracked-files=no").Output(); err == nil && len(strings.TrimSpace(string(st))) > 0 {
-		c += "-dirty"
-	}
-	return c
-}
-
-func hardware() string {
-	var cmd *exec.Cmd
-	switch runtime.GOOS {
-	case "darwin":
-		cmd = exec.Command("sysctl", "-n", "machdep.cpu.brand_string")
-	case "linux":
-		cmd = exec.Command("sh", "-c", "grep -m1 'model name' /proc/cpuinfo | cut -d: -f2")
-	default:
-		return runtime.GOARCH
-	}
-	b, err := cmd.Output()
-	if err != nil {
-		return runtime.GOARCH
-	}
-	return fmt.Sprintf("%s (%d logical CPUs)", strings.TrimSpace(string(b)), runtime.NumCPU())
 }
