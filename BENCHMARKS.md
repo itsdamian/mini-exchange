@@ -13,7 +13,7 @@ Numbers here are **measured**, not targets. Every table says which file in `benc
 | Go | go1.27.3 |
 | GOMAXPROCS | 10 |
 | GOGC / GOMEMLIMIT | 100 (default) / unset |
-| Commit | `d3e196b` (clean tree) |
+| Commit | `d3e196b` at measurement time, clean tree. The history was later rewritten to fix the commit author; the same tree is now commit `29a8101`, which is the commit to check out to reproduce |
 | Raw results | `bench/results/engine-mixed-20261109T043025Z-d3e196b.json`, `engine-deep-...json`, `gobench-...txt` |
 
 ### Method
