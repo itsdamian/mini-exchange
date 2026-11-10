@@ -77,6 +77,13 @@ type Config struct {
 	MaxInFlight  int       // concurrent Submit calls (default 32768)
 	ReportBuffer int       // per-subscriber report buffer (default 4096)
 	Registerer   prometheus.Registerer
+	// LockEngineThread pins the engine goroutine to one OS thread
+	// (runtime.LockOSThread). Off by default; phase 8 experiment 9 measures it.
+	LockEngineThread bool
+	// UseChannels replaces the input MPSC ring and the output SPSC ring with buffered
+	// channels of the same capacity (and no spinning: the consumers block). Off by default;
+	// phase 8 experiment 3 compares the two at the level of the whole gateway.
+	UseChannels bool
 }
 
 // Stats are cumulative counters maintained by the dispatcher.
@@ -141,9 +148,13 @@ const (
 
 // Pipeline is the engine goroutine, its rings and the dispatcher.
 type Pipeline struct {
-	book *engine.Book
-	in   *ring.MPSC[inItem]
-	out  *ring.SPSC[outItem]
+	chIn       chan inItem  // set only with Config.UseChannels
+	chOut      chan outItem // set only with Config.UseChannels
+	stopIn     chan struct{}
+	lockThread bool
+	book       *engine.Book
+	in         *ring.MPSC[inItem]
+	out        *ring.SPSC[outItem]
 
 	slots []slot
 	free  chan uint32
@@ -203,20 +214,22 @@ func New(cfg Config) *Pipeline {
 
 	now := time.Now()
 	p := &Pipeline{
-		book:     book,
-		log:      cfg.Log,
-		risk:     cfg.Risk,
-		nextID:   nextID,
-		in:       ring.NewMPSC[inItem](cfg.InputSize),
-		out:      ring.NewSPSC[outItem](cfg.OutputSize),
-		slots:    make([]slot, cfg.MaxInFlight+1),
-		free:     make(chan uint32, cfg.MaxInFlight),
-		inPark:   newParker(),
-		outPark:  newParker(),
-		hub:      newHub(cfg.ReportBuffer),
-		base:     now,
-		baseUnix: now.UnixNano(),
-		live:     make(map[uint64]liveOrder, cfg.Book.MaxOrders),
+		stopIn:     make(chan struct{}),
+		book:       book,
+		log:        cfg.Log,
+		risk:       cfg.Risk,
+		nextID:     nextID,
+		lockThread: cfg.LockEngineThread,
+		in:         ring.NewMPSC[inItem](cfg.InputSize),
+		out:        ring.NewSPSC[outItem](cfg.OutputSize),
+		slots:      make([]slot, cfg.MaxInFlight+1),
+		free:       make(chan uint32, cfg.MaxInFlight),
+		inPark:     newParker(),
+		outPark:    newParker(),
+		hub:        newHub(cfg.ReportBuffer),
+		base:       now,
+		baseUnix:   now.UnixNano(),
+		live:       make(map[uint64]liveOrder, cfg.Book.MaxOrders),
 		queueWait: f.NewHistogram(prometheus.HistogramOpts{
 			Name: "mx_engine_queue_wait_seconds", Help: "Time a command waits in the input ring before the engine pops it.", Buckets: buckets,
 		}),
@@ -240,6 +253,9 @@ func New(cfg Config) *Pipeline {
 		p.free <- uint32(i)
 	}
 	p.wg.Add(2)
+	if cfg.UseChannels {
+		p.chIn, p.chOut = make(chan inItem, cfg.InputSize), make(chan outItem, cfg.OutputSize)
+	}
 	go p.engineLoop()
 	go p.dispatchLoop()
 	return p
@@ -282,12 +298,23 @@ func (p *Pipeline) Submit(ctx context.Context, cmd engine.Command, clientOrderID
 	s := &p.slots[t]
 	s.client = clientOrderID
 	s.state.Store(slotWaiting)
-	if !p.in.Push(inItem{cmd: cmd, ticket: t, enq: p.now()}) {
-		p.free <- t
-		p.overloaded.Inc()
-		return engine.Event{}, ErrOverloaded
+	item := inItem{cmd: cmd, ticket: t, enq: p.now()}
+	if p.chIn != nil {
+		select {
+		case p.chIn <- item:
+		default:
+			p.free <- t
+			p.overloaded.Inc()
+			return engine.Event{}, ErrOverloaded
+		}
+	} else {
+		if !p.in.Push(item) {
+			p.free <- t
+			p.overloaded.Inc()
+			return engine.Event{}, ErrOverloaded
+		}
+		p.inPark.notify()
 	}
-	p.inPark.notify()
 
 	select {
 	case ev := <-s.ch:
@@ -309,6 +336,7 @@ func (p *Pipeline) Stop(ctx context.Context) error {
 	if p.closed.Swap(true) {
 		return nil
 	}
+	close(p.stopIn)
 	p.inPark.notify()
 	done := make(chan struct{})
 	go func() { p.wg.Wait(); close(done) }()
@@ -324,6 +352,19 @@ func (p *Pipeline) Stop(ctx context.Context) error {
 // nextInput pops the next command, spinning, then yielding, then parking.
 // It returns false only when the pipeline is closed and the ring is drained.
 func (p *Pipeline) nextInput() (inItem, bool) {
+	if p.chIn != nil {
+		select {
+		case it := <-p.chIn:
+			return it, true
+		case <-p.stopIn:
+			select {
+			case it := <-p.chIn:
+				return it, true
+			default:
+				return inItem{}, false
+			}
+		}
+	}
 	for idle := 0; ; idle++ {
 		if it, ok := p.in.Pop(); ok {
 			return it, true
@@ -354,7 +395,17 @@ func (p *Pipeline) nextInput() (inItem, bool) {
 
 func (p *Pipeline) engineLoop() {
 	defer p.wg.Done()
-	defer func() { p.engineDone.Store(true); p.outPark.notify() }()
+	if p.lockThread {
+		runtime.LockOSThread()
+		defer runtime.UnlockOSThread()
+	}
+	defer func() {
+		p.engineDone.Store(true)
+		p.outPark.notify()
+		if p.chOut != nil {
+			close(p.chOut)
+		}
+	}()
 	evs := make([]engine.Event, 0, 256)
 	for {
 		it, ok := p.nextInput()
@@ -378,6 +429,10 @@ func (p *Pipeline) engineLoop() {
 			if i == 0 {
 				o.ticket = it.ticket
 			}
+			if p.chOut != nil {
+				p.chOut <- o
+				continue
+			}
 			for !p.out.Push(o) { // the dispatcher is draining: never drop events
 				p.outPark.notify()
 				runtime.Gosched()
@@ -388,6 +443,10 @@ func (p *Pipeline) engineLoop() {
 }
 
 func (p *Pipeline) nextOutput() (outItem, bool) {
+	if p.chOut != nil {
+		it, ok := <-p.chOut
+		return it, ok
+	}
 	for idle := 0; ; idle++ {
 		if it, ok := p.out.Pop(); ok {
 			return it, true

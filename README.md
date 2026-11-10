@@ -18,8 +18,8 @@ The specification is [requirements.md](requirements.md). Significant decisions a
 | 5 | Double-entry ledger in PostgreSQL, dead-letter topic, reconciliation | done |
 | 6 | Market data over WebSocket, synthetic order flow | done |
 | 7 | Kubernetes (k3d, Argo CD, Strimzi, CloudNativePG), dashboards | done |
-| 8 | Optimization report, optional standby failover | next |
-| 9 | Minimal UI (stretch) | planned |
+| 8 | Optimization report (the optional standby failover was not done) | done |
+| 9 | Minimal UI (stretch) | next, optional |
 
 The engine, a gRPC gateway, the Kafka event log, Redis pre-trade risk the PostgreSQL ledger, a WebSocket market data feed and a synthetic order bot exist today (the ledger and the feed are fed from Kafka, not from the order path). The diagram below is the **target** architecture.
 
@@ -145,6 +145,18 @@ Honest limits: the bot is not a realistic market simulation (fixed spread, rando
 
 Honest limits: no Sealed Secrets (nothing hand-managed to seal; the Grafana password is a local value in git), no Alertmanager, single node and single instances, Kafka 4.3.1 in the cluster versus 3.9.0 in the tests, and the rules were unit-tested but not triggered by a real fault. The in-cluster latency numbers are not comparable to the localhost benchmarks. See [BENCHMARKS.md](BENCHMARKS.md).
 
+### Optimization report (phase 8)
+
+Every experiment of requirements section 5.3 is a before/after entry in [BENCHMARKS.md](BENCHMARKS.md) (section 8), reproducible with `scripts/bench-all.sh` (about 45 minutes; `QUICK=1` for a 10-minute check). The decisions are in [ADR 0013](docs/adr/0013-optimization-decisions.md). Highlights, all on one noisy laptop:
+
+- **Adopted**: an open-addressing id table in the engine (`Apply` 22 to 27% faster, the deep-book allocations of phase 1 gone) and reused protobuf messages in the event-log publisher.
+- **Kept because the alternative lost**: sorted slice for price levels (up to about 1,000 levels; a B-tree wins at 10,000), intrusive list in a slab (8 times faster than `container/list`), default GC settings, thread pinning (it raised the median by about 40 µs).
+- **A surprise**: buffered channels beat the lock-free rings, 25% at the median and 45% less CPU in five interleaved pairs, because the ring consumers spin. The tail could not be compared on this machine, so the rings stay the default and `-queue-channels` is an option.
+- **The tail (p99.9 and max) is the machine**: spinning code that does nothing else is stalled for up to 76 ms when it uses all the cores, and turning the GC off or pinning the thread changes nothing. An explanation backed by a control, not a proof; a quiet machine is the confirmation, not done.
+- **Matching is not where time goes**: in a CPU profile under load the engine loop is 0.6%, waiting and waking (`runtime.Gosched`, network syscalls) is most of the rest.
+
+Not done: the optional hot standby engine (FR-9).
+
 ## Quick start
 
 Requirements: Go (version in `go.mod`), Docker with Compose, and `golangci-lint` for `make lint`.
@@ -188,6 +200,7 @@ internal/gateway     gRPC server, validation, idempotency
 internal/pipeline    gateway-to-engine rings, engine goroutine, dispatcher, report hub
 internal/ring        lock-free SPSC and MPSC bounded queues
 internal/eventlog    Kafka publisher, snapshots, follower, recovery (kafkatest: Docker broker for tests)
+internal/experiments phase 8 micro-experiments (price levels, queues, hand-off, encoding, host jitter)
 internal/marketdata  depth and trade view from the log, WebSocket server with conflation
 internal/bot         price sources, deterministic planner and runner
 internal/nonet       test guard against external network access

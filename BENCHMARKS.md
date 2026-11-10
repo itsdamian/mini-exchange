@@ -56,7 +56,7 @@ The wide margins mostly reflect that the target was set for a conservative machi
 
 ### Known gap: allocations in the deep scenario
 
-A heap profile (`-memprofile -memprofilerate 1`) attributes the remaining allocations to the insertion `b.index[c.OrderID] = idx` in `Book.rest`: Go's built-in map occasionally allocates when churning through many inserts and deletes with a large live set. Replacing the `map[uint64]int32` with a preallocated open-addressing integer table is experiment 4 in section 5.3 and will be recorded here as a before/after entry in phase 8.
+A heap profile (`-memprofile -memprofilerate 1`) attributes the remaining allocations to the insertion `b.index[c.OrderID] = idx` in `Book.rest`: Go's built-in map occasionally allocates when churning through many inserts and deletes with a large live set. Replacing the `map[uint64]int32` with a preallocated open-addressing integer table is experiment 4 in section 5.3. **Done in phase 8: see section 8.1 (the allocations are gone and `Apply` is about 22 to 27% faster).**
 
 ### Correctness checks that back these numbers
 
@@ -313,4 +313,197 @@ Setup: Apple M5, 10 logical CPUs, Docker Desktop with 16 GB; one k3d node (k3s v
 - Time from nothing to Healthy was not measured. The working run, with the images already pulled once, took on the order of 20 to 30 minutes by my watch, most of it image pulls; the first attempt failed on the git protocol (ADR 0012) and the first healthy deployment had one start-up restart per service before the init containers were added. I did not time a clean run end to end.
 - The latency figures are one cluster on one laptop, two runs, not a result about the system's speed.
 - The alert rules are unit-tested with promtool but were not made to fire on a real fault; reconciliation against the cluster's databases and a browser look at the dashboard were not done (ADR 0012).
+
+## Phase 8: optimization report
+
+Every experiment of requirements section 5.3, with what was measured and what was decided. Everything is reproducible with one script, `scripts/bench-all.sh` (a full run takes about 45 minutes; `QUICK=1` runs the whole thing in about 10 minutes to check it works). The raw files are in `bench/results/phase8/` and `bench/results/gateway-*p8-*`.
+
+### 8.0 Setup and a warning about this machine
+
+Apple M5 (10 logical CPUs, 4 performance and 6 efficiency cores), macOS, go1.27.3, commit `08060db` as the baseline (the last commit before this phase) and the working tree of this phase as "after". The Go micro-benchmarks ran 5 times of 1 s each (`-count 5`); the gateway experiments ran the load test at 10,000 orders/s, 30 s measured after a 5 s warm-up, 3 runs per setting (5 interleaved pairs for rings against channels), with the Kafka event log in the path and no Redis or ledger, the load generator and the gateway on the same host over loopback. `GOMAXPROCS` is the default (10) except where a row says otherwise. Environment, load average and commit are in `bench/results/phase8/env-*.txt`.
+
+**The machine is noisy, and this matters for every tail number below.** The load average was about 7 while idle (the Docker VM runs other containers, among other things). The control in 8.6 shows what the host alone does. Medians (p50) are stable between runs; p99.9 and max are not, and differences in them between settings are mostly not distinguishable from run-to-run variation.
+
+### 8.1 Experiment 4 (and the phase 1 gap): integer order ids and an open-addressing id index
+
+**Change adopted.** The engine looked orders up in a built-in `map[uint64]int32`, which phase 1 identified as the source of the allocations in the deep-book scenario. It now uses a preallocated open-addressing table with linear probing and backward-shift deletion (`internal/engine/idtable.go`): no tombstones, no allocation in steady state.
+
+| Benchmark (`go test -bench -benchmem`, 5 runs) | before (map) | after (table) | change |
+|---|---|---|---|
+| ApplyMixed, ns/op | 58.8 to 59.2 | 42.7 to 42.9 | about 27% faster |
+| ApplyDeepBook, ns/op | 70.4 to 71.2 | 54.7 to 59.9 (four runs 54.7 to 55.4, one 59.9) | about 22% faster |
+| allocations in `Apply` (deep, allocation profile at rate 1) | about 150 to 190 per 5M orders | none: the profile lists only set-up code (generator, `NewBook`) | gap closed |
+
+Orders per second: mixed 16.9M to 17.0M becomes 23.3M to 23.4M; deep 14.0M to 14.2M becomes 16.7M to 18.3M. The differential test against the reference implementation (1,000,000 operations) and the property tests still pass, and the table has its own property test against a Go map (including collisions, deletes in the middle of probe runs and growth) and a no-allocation churn test. Files: `engine-before-manual-20261110.txt`, `engine-after-manual-20261110.txt` (and `scripts/bench-all.sh` stage 1 repeats it against a worktree of the baseline commit). Phase 1's "not strictly met" on zero hot-path allocations is now met.
+
+The rest of experiment 4 is in the micro-benchmark table of 8.2: the cost of the things the hot path avoids.
+
+### 8.2 Micro-experiments (isolated mechanisms, `internal/experiments`)
+
+These measure one mechanism in isolation, not the matcher. A mechanism that is 10 times faster in isolation can be invisible in the whole system, and the other way round (8.4).
+
+**Experiment 1: price-level index** (sorted slice = what the engine uses)
+
+| Levels per side | sorted slice | B-tree (degree 32) | skip list |
+|---|---|---|---|
+| 10 | 14.5 (14.4 to 14.6) | 36.1 (35.9 to 36.8) | 43.5 (43.5 to 44.2) |
+| 100 | 22.3 (22.2 to 22.6) | 62.2 (62.0 to 62.6) | 63.9 (63.7 to 67.3) |
+| 1000 | 48.8 (48.4 to 49.4) | 78.9 (78.1 to 82.3) | 74.8 (74.6 to 77.3) |
+| 10000 | 317.7 (316.6 to 323.3) | 109.7 (109.3 to 112.4) | 97.4 (97.2 to 104.4) |
+
+All three: 0 allocs/op in steady state.
+
+**Experiment 2: order queue inside a price level** (1,000 resting orders; each step adds one and cancels one)
+
+| Structure | median ns/op (min to max of 5) | allocs/op |
+|---|---|---|
+| intrusive list in a preallocated slab (engine) | 2.4 (2.4 to 2.4) | 0 |
+| container/list, one heap order per element | 18.9 (18.9 to 19.2) | 2 |
+| hand-written list of heap nodes | 13.1 (12.7 to 14.0) | 1 |
+| hand-written list of nodes from sync.Pool | 9.1 (9.1 to 9.2) | 0 |
+
+**Experiments 3 and 5: handing 48-byte items between goroutines**
+
+| Queue | median ns/op (min to max of 5) | allocs/op |
+|---|---|---|
+| 1 producer, 1 consumer: buffered channel | 21.6 (21.1 to 22.3) | 0 |
+| 1p1c: ring as in internal/ring today | 72.7 (69.6 to 73.1) | 0 |
+| 1p1c: ring, cursors on separate cache lines | 87.4 (86.5 to 88.3) | 0 |
+| 1p1c: ring, separate cache lines and cached opposite cursor | 53.9 (53.3 to 54.4) | 0 |
+| 4 producers, 1 consumer: buffered channel | 30.0 (29.4 to 30.2) | 0 |
+| 4p1c: MPSC ring (CAS per push) | 210.2 (205.2 to 236.0) | 0 |
+| round trip: channels | 186.4 (182.2 to 193.6) | 0 |
+| round trip: rings, both sides spin | 211.9 (209.4 to 220.2) | 0 |
+| round trip: rings, spin then runtime.Gosched() | 1100.0 (1026.0 to 1110.0) | 0 |
+
+**Experiment 4: costs the hot path avoids**
+
+| Operation | median ns/op (min to max of 5) | allocs/op |
+|---|---|---|
+| time.Now() | 26.4 (26.3 to 26.5) | 0 |
+| time.Since() | 11.8 (11.7 to 12.0) | 0 |
+| a counter handed in by the sequencer (what the matcher stamps) | 0.5 (0.5 to 0.5) | 0 |
+| order id as text with fmt.Sprintf | 29.3 (29.0 to 30.0) | 2 |
+| order id as text with strconv.Itoa | 9.8 (9.6 to 10.2) | 0 |
+| integer order id | 1.2 (1.2 to 1.2) | 0 |
+| lookup in map[string] (100k live) | 8.3 (8.3 to 8.5) | 0 |
+| lookup in map[uint64] (100k live) | 5.5 (5.5 to 5.6) | 0 |
+| event boxed in an interface (escapes) | 9.2 (9.2 to 9.2) | 1 |
+| event as a concrete struct | 1.2 (1.2 to 1.2) | 0 |
+
+**Experiment 8: encoding the events of one command for the Kafka log** (batches of a realistic workload)
+
+| Encoder | median ns/op (min to max of 5) | allocs/op |
+|---|---|---|
+| new messages, proto.Marshal | 201.8 (200.7 to 202.9) | 4 |
+| new messages, reused byte buffer (the publisher before phase 8) | 205.6 (203.8 to 208.0) | 4 |
+| reused messages and buffer (the publisher now) | 159.5 (158.9 to 161.1) | 1 |
+
+What they say:
+- **1, price levels.** The sorted slice the engine uses is the fastest up to about 1,000 levels per side (14 to 49 ns against 36 to 79 ns for the B-tree and 44 to 75 ns for the skip list) and is the slowest at 10,000 (318 ns against about 100 ns), where inserting in the middle copies a large slice. Real books in the workloads used here have tens to about a thousand levels per side (the deep scenario: about 1,000), so the slice stays; with a book of ten thousand levels a B-tree would be the better choice. The crossover is between 1,000 and 10,000 levels and was not located more precisely.
+- **2, order queue.** The intrusive list in a slab is about 8 times faster than `container/list` (2.4 against 18.9 ns) and the only one that never allocates and never touches pointers the GC must scan; a `sync.Pool` of nodes removes the allocation but is still about 4 times slower than the slab.
+- **3 and 5, hand-off.** A surprise: in isolation the buffered channel beats the lock-free ring here (21.6 against 72.7 ns for one producer; 30 against 210 ns for four producers), and padding the cursors onto separate cache lines made the ring slower (87 ns) until each side also cached the other's cursor (53.9 ns). The MPSC ring's cost is a CAS on one shared counter per push, and this benchmark has the producers retry at once when the ring is full, which the gateway does not (it refuses the request instead); that exaggerates the contention. The cursor layout only matters when the queue is saturated, which it never is in the gateway, so I did not change `internal/ring`. Round trip: the spinning ring is about as fast as channels (212 against 186 ns) and a ring that yields while idle is 6 times slower (1,100 ns). Struct layout: the engine's order is 48 bytes; the same fields in a careless order take 56 bytes, a cache-line-padded one 64 (`TestOrderLayoutSizes`).
+- **4, hot-path costs.** `time.Now` costs 26 ns and `time.Since` 12 ns where the matcher takes the sequencer's number for 0.5 ns; `fmt.Sprintf` for an id 29 ns and 2 allocations against 1.2 ns for an integer; a `map[string]` lookup 8.3 ns against 5.5 ns for `map[uint64]`; boxing an event in an interface 9 ns and 1 allocation against 1.2 ns. All are what the design already avoids; nothing was changed because of them.
+- **8, protobuf encoding.** Reusing the `EventBatch` messages as well as the buffer takes the encoding of one command's events from 201 ns and 4 allocations to 159 ns and 1 (the allocation left is the copy the Kafka client needs). Adopted in the publisher (`eventlog.FillProtoBatch`). It runs on the publisher goroutine, off the engine's path, and saves about 40 ns per command: a real but small change. The gateway's own gRPC encoding is inside grpc-go; the CPU profile (8.7) shows protobuf below the 0.5% cut-off.
+
+### 8.3 Experiment 6: GC settings (gateway, 3 runs each)
+
+| tag | run | p50 us | p90 us | p99 us | p99.9 us | max us | GC cycles | publish lag p50 / p99 (ms, bucket bound) |
+|---|---|---|---|---|---|---|---|---|
+| p8-baseline | 1 | 77 | 125 | 194 | 644 | 3243 | 26 | 3.20 / 12.80 |
+| p8-baseline | 2 | 73 | 120 | 183 | 544 | 3417 | 26 | 3.20 / 6.40 |
+| p8-baseline | 3 | 76 | 127 | 305 | 6183 | 18191 | 26 | 3.20 / 6.40 |
+| p8-gogc400 | 1 | 77 | 130 | 545 | 10783 | 26111 | 7 | 3.20 / 6.40 |
+| p8-gogc400 | 2 | 76 | 125 | 214 | 2517 | 18751 | 7 | 3.20 / 6.40 |
+| p8-gogc400 | 3 | 76 | 125 | 213 | 1167 | 7999 | 7 | 3.20 / 6.40 |
+| p8-gc-off-limit | 1 | 77 | 127 | 330 | 3189 | 7211 | 1 | 3.20 / 6.40 |
+| p8-gc-off-limit | 2 | 78 | 128 | 306 | 6007 | 17423 | 1 | 3.20 / 6.40 |
+| p8-gc-off-limit | 3 | 78 | 129 | 347 | 6075 | 11863 | 1 | 3.20 / 6.40 |
+
+`GOGC=400` cuts the GC cycles in a run from 26 to 7 and `GOGC=off` with `GOMEMLIMIT=2GiB` to 1, with no visible effect on the median (76 to 78 µs) and no improvement of the tail (p99.9 between 0.5 and 10.8 ms in every setting, the baseline included). **Garbage collection is not what produces the tail here.** The gateway allocates little (the matcher none); I did not reduce pointer-heavy structures further because nothing pointed at them. The default was left unchanged.
+
+### 8.4 Experiment 3 at system level: rings or channels between gateway, engine and dispatcher
+
+`-queue-channels` replaces the lock-free input and output rings by buffered channels of the same capacity (the consumers then block instead of spinning). Interleaved so that drift of the machine hits both (ring, channel, ring, ...), 5 pairs:
+
+| tag | run | p50 us | p90 us | p99 us | p99.9 us | max us | GC cycles | publish lag p50 / p99 (ms, bucket bound) |
+|---|---|---|---|---|---|---|---|---|
+| ab-ring | 1 | 80 | 133 | 618 | 50079 | 105727 | 26 | 0.10 / 6.40 |
+| ab-ring | 1 | 78 | 132 | 375 | 6623 | 16511 | 26 | 3.20 / 6.40 |
+| ab-ring | 1 | 87 | 159 | 4755 | 53951 | 78911 | 26 | 3.20 / 12.80 |
+| ab-ring | 1 | 80 | 135 | 444 | 11855 | 37343 | 26 | 3.20 / 25.60 |
+| ab-ring | 1 | 76 | 129 | 283 | 2044 | 9903 | 26 | 3.20 / 6.40 |
+| ab-chan | 1 | 63 | 127 | 1140 | 19711 | 42143 | 24 | 3.20 / 6.40 |
+| ab-chan | 1 | 61 | 144 | 15431 | 208255 | 232319 | 24 | 3.20 / 12.80 |
+| ab-chan | 1 | 60 | 123 | 1700 | 27471 | 47903 | 24 | 3.20 / 12.80 |
+| ab-chan | 1 | 57 | 106 | 238 | 5483 | 21311 | 24 | 3.20 / 6.40 |
+| ab-chan | 1 | 56 | 102 | 170 | 610 | 3115 | 24 | 3.20 / 6.40 |
+
+CPU time of the gateway process per run (about 45 s each): rings 58, 57, 57, 56, 55 s; channels 32, 31, 31, 31, 31 s.
+
+- **Median**: channels are faster in all five pairs (56 to 63 µs against 76 to 87 µs, about 25%).
+- **CPU**: channels use about 45% less (about 0.7 against 1.25 cores on average), because the ring consumers spin and yield while idle: `runtime.Gosched` and the scheduler account for about 38% of the gateway's CPU samples in 8.7.
+- **Tail**: not distinguishable. Both settings have bad runs in this batch (rings: p99.9 of 50 and 54 ms; channels: 20, 208 and 27 ms), and the best runs are channels'. Whether a parked goroutine wakes later than a spinning one under a loaded host is exactly what this machine cannot answer (8.6).
+- **Decision: the rings stay the default**, the channels are an option (`-queue-channels`, same behaviour, tested). Switching would be right if a quiet machine showed the tail is no worse: the median and CPU gain is real here. I did not switch on a median-only result for a system whose targets include a tail.
+
+### 8.5 Experiments 7 and 9: Kafka linger, and pinning the engine to a thread
+
+Kafka producer linger against the publish lag (engine event to Kafka acknowledgement; `mx_eventlog_publish_lag_seconds`; quantiles are the upper bound of the power-of-two bucket, so they overstate by up to 2x):
+
+| tag | run | p50 us | p90 us | p99 us | p99.9 us | max us | GC cycles | publish lag p50 / p99 (ms, bucket bound) |
+|---|---|---|---|---|---|---|---|---|
+| p8-linger-0 | 1 | 118 | 183 | 1606 | 20303 | 31455 | 34 | 0.80 / 12.80 |
+| p8-linger-0 | 2 | 113 | 162 | 473 | 3593 | 13791 | 34 | 0.80 / 3.20 |
+| p8-linger-0 | 3 | 114 | 166 | 915 | 18127 | 42655 | 34 | 0.80 / 6.40 |
+| p8-linger-1ms | 1 | 82 | 130 | 312 | 26991 | 59423 | 26 | 0.80 / 3.20 |
+| p8-linger-1ms | 2 | 89 | 150 | 2669 | 27055 | 56991 | 26 | 1.60 / 6.40 |
+| p8-linger-1ms | 3 | 82 | 133 | 282 | 2004 | 10575 | 26 | 0.80 / 1.60 |
+| p8-linger-5ms | 1 | 76 | 126 | 264 | 4431 | 13951 | 26 | 3.20 / 6.40 |
+| p8-linger-5ms | 2 | 77 | 132 | 341 | 2445 | 9455 | 26 | 3.20 / 6.40 |
+| p8-linger-5ms | 3 | 74 | 125 | 236 | 1837 | 13967 | 26 | 3.20 / 6.40 |
+| p8-linger-20ms | 1 | 72 | 125 | 275 | 2251 | 12343 | 26 | 12.80 / 25.60 |
+| p8-linger-20ms | 2 | 71 | 121 | 247 | 1916 | 6099 | 26 | 12.80 / 25.60 |
+| p8-linger-20ms | 3 | 75 | 132 | 539 | 63551 | 106367 | 26 | 12.80 / 25.60 |
+
+- Lag follows linger: p50 of 0.8, 0.8, 3.2 and 12.8 ms (bucket bounds) for 0, 1, 5 and 20 ms. The default of 5 ms costs about 3 ms of event-log lag for the lowest CPU use.
+- `linger=0` sends every batch alone: client p50 rises from about 76 to 114 µs and the GC cycles from 26 to 34, with the lowest lag. **1 ms is the cheaper way to a low lag**: lag p50 0.8 to 1.6 ms for a p50 of 82 to 89 µs. 20 ms gives the same client p50 (71 to 75 µs) and 13 to 26 ms of lag. The default stays at 5 ms; `-kafka-linger 1ms` is the setting if the lag matters more than 6 µs of median.
+
+Pinning the engine goroutine to an OS thread (`-lock-engine-thread`, `runtime.LockOSThread`):
+
+| tag | run | p50 us | p90 us | p99 us | p99.9 us | max us | GC cycles | publish lag p50 / p99 (ms, bucket bound) |
+|---|---|---|---|---|---|---|---|---|
+| p8-lock-thread | 1 | 118 | 159 | 284 | 1784 | 14583 | 26 | 3.20 / 6.40 |
+| p8-lock-thread | 2 | 118 | 157 | 234 | 704 | 5591 | 26 | 3.20 / 6.40 |
+| p8-lock-thread | 3 | 119 | 162 | 441 | 10055 | 24991 | 26 | 3.20 / 6.40 |
+| p8-gomaxprocs4 | 1 | 77 | 125 | 289 | 3569 | 10735 | 25 | 3.20 / 6.40 |
+| p8-gomaxprocs4 | 2 | 76 | 125 | 230 | 2837 | 18255 | 25 | 3.20 / 6.40 |
+| p8-gomaxprocs4 | 3 | 75 | 121 | 200 | 5123 | 15703 | 25 | 3.20 / 6.40 |
+
+Pinning **raised the median from about 76 to 118 µs** in all three runs and did not improve the tail (p99.9 0.7 to 10 ms against 0.5 to 6 ms). With the thread locked, every wake-up of the engine goroutine goes through the OS scheduler instead of the Go scheduler's run queue. Not adopted. `GOMAXPROCS=4` for the gateway (the setting phases 4 and later used for the whole test) changes nothing measurable for the gateway alone.
+
+### 8.6 The tail: the machine, not the gateway
+
+The p99.9 and max of phases 2 to 4 were left unexplained. A control: `TestHostJitter` runs goroutines that do nothing but read the clock in a loop (no allocation, no locks, no I/O, nothing for the GC to do) and records the longest gap between two reads. A gap of milliseconds there can only be the goroutine not running. 20 s each, GOMAXPROCS 10, same machine and time as the A/B runs (`host-jitter-*.txt`):
+
+| Spinning goroutines | longest gap | gaps over 1 ms | over 5 ms | over 10 ms | over 50 ms |
+|---|---|---|---|---|---|
+| 4 | 4.4 ms | 14 | 0 | 0 | 0 |
+| 10 (all cores) | 76 ms | 5,216 | 750 | 164 | 4 |
+
+Code with nothing to garbage-collect and nothing to wait for is stalled for up to 76 ms when it uses all the cores of this machine. The gateway, the load generator and Kafka together use more than 4 cores. Together with 8.3 (turning the GC off changes nothing) and 8.5 (pinning changes nothing), this is my explanation of the tail: **scheduling on this host (shared cores, efficiency cores, a busy Docker VM), not the engine, the GC or the queues**. It is an explanation backed by a control and by three experiments that exclude the alternatives, not a proof: I have not measured the gateway on a quiet or dedicated machine, which would be the confirmation.
+
+### 8.7 CPU profile of the gateway under load (20 s of 10,000 orders/s)
+
+`go tool pprof -top bench/results/gateway-cpu-p8-profile-*.pprof`. Of the CPU samples: `engineLoop` 0.6%, `dispatchLoop` 0.6%, GC background workers about 1%, protobuf and `mallocgc` below the 0.5% cut-off, gRPC stream handling 8%, reads and writes (network syscalls) 19%, `runtime.Gosched` 38%, `usleep` 17%. **Matching is a rounding error; the gateway's CPU goes into waiting and waking** (the spin-then-yield loops of the engine and dispatcher and the network). That is why the channel version in 8.4 uses 45% less CPU, and where a next optimization of the system would have to look, not at the matcher.
+
+### 8.8 Against the section 5.1 targets, and what was not done
+
+| Target | Result |
+|---|---|
+| Engine p99 under 50 µs per order; 500k orders/s | met by a wide margin (phase 1; now 23M orders/s on the mixed workload) |
+| Gateway p50 under 1 ms, p99 under 5 ms at 10k orders/s on localhost | met in these runs (Kafka log, no risk): p50 56 to 119 µs across all settings (about 76 µs at the default), p99 0.15 to 0.55 ms in most runs; a few runs had p99 above 1 ms (up to 15 ms) when the host stalled. With Redis risk and the ledger the figures are in phases 4 and 5 |
+| Recovery of 1M events under 10 s | measured in phase 3, not repeated here |
+| Zero steady-state heap allocations in the matcher | met (8.1) |
+
+Not done: the optional high availability of FR-9 (a standby engine on the same stream); the experiments could not show where a tail improvement would come from on this machine, so the hot-standby work was not started either. The measurements that would settle open points need a quiet or dedicated machine: the tail of rings against channels (8.4) and the host explanation (8.6).
 

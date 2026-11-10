@@ -13,6 +13,8 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/itsdamian/mini-exchange/internal/engine"
+
+	exchangev1 "github.com/itsdamian/mini-exchange/gen/exchange/v1"
 )
 
 // PublisherConfig configures a Publisher.
@@ -127,10 +129,12 @@ func (p *Publisher) run() {
 	defer p.wg.Done()
 	key := []byte(p.cfg.Symbol)
 	var buf []byte
+	msg := &exchangev1.EventBatch{} // reused for every batch: encoding allocates only the value copy below
 	for evs := range p.q {
 		buf = buf[:0]
 		var err error
-		buf, err = proto.MarshalOptions{}.MarshalAppend(buf, ToProtoBatch(p.cfg.Symbol, evs))
+		FillProtoBatch(msg, p.cfg.Symbol, evs)
+		buf, err = proto.MarshalOptions{}.MarshalAppend(buf, msg)
 		if err != nil {
 			p.fail(err)
 			continue

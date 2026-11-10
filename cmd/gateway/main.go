@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	_ "net/http/pprof" // registers /debug/pprof on http.DefaultServeMux, served only with -pprof-addr
 	"os"
 	"os/signal"
 	"strings"
@@ -58,6 +59,9 @@ func run() error {
 		maxOpen   = flag.Int64("risk-max-open", 1000, "open orders per account (0 disables)")
 		rateLimit = flag.Int64("risk-rate", 1000, "orders per second per account, token bucket refill (0 disables)")
 		rateBurst = flag.Int64("risk-burst", 2000, "token bucket capacity per account")
+		pprofAddr = flag.String("pprof-addr", "", "serve net/http/pprof on this address (empty: off; use localhost:PORT, it is unauthenticated)")
+		useChans  = flag.Bool("queue-channels", false, "experiment: buffered channels instead of the lock-free rings between the gateway, engine and dispatcher")
+		lockEng   = flag.Bool("lock-engine-thread", false, "pin the engine goroutine to an OS thread (runtime.LockOSThread)")
 		riskTO    = flag.Duration("risk-timeout", 100*time.Millisecond, "timeout of the pre-trade Redis call")
 	)
 	flag.Parse()
@@ -70,7 +74,13 @@ func run() error {
 	reg.MustRegister(collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
 
 	bookCfg := engine.Config{MaxOrders: *maxOrders, MaxLevels: 4096}
-	pcfg := pipeline.Config{Book: bookCfg, InputSize: *inputSize, MaxInFlight: *inFlight, Registerer: reg}
+	pcfg := pipeline.Config{Book: bookCfg, InputSize: *inputSize, MaxInFlight: *inFlight, Registerer: reg, LockEngineThread: *lockEng, UseChannels: *useChans}
+	if *pprofAddr != "" {
+		go func() { // profiling endpoints on their own listener, never on the public ports
+			log.Info("pprof listening", "addr", *pprofAddr)
+			_ = http.ListenAndServe(*pprofAddr, nil) //nolint:gosec // opt-in, local
+		}()
+	}
 
 	var (
 		pub      *eventlog.Publisher

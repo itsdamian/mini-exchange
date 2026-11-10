@@ -91,17 +91,35 @@ func fromProtoReject(r exchangev1.RejectReason) (engine.RejectReason, error) {
 	return 0, fmt.Errorf("unknown reject reason %v", r)
 }
 
+// FillProtoEvent writes e into p without allocating. ToProtoBatch uses it; it is
+// exported so a caller that reuses its messages can too.
+func FillProtoEvent(p *exchangev1.EngineEvent, e *engine.Event) {
+	p.Sequence, p.Type, p.TimestampNs = e.Seq, toProtoType(e.Kind), e.Ts
+	p.OrderId, p.AccountId, p.Side = e.OrderID, e.AccountID, toProtoSide(e.Side)
+	p.Price, p.Quantity, p.RejectReason = e.Price, e.Qty, rejectToProto[e.Reject]
+	p.MakerOrderId, p.MakerAccountId = e.MakerOrderID, e.MakerAccountID
+}
+
+// FillProtoBatch writes evs into b, reusing b's EngineEvent messages (it grows
+// b.Events only when a batch is longer than any before). The result is
+// identical to ToProtoBatch; it allocates nothing in steady state.
+func FillProtoBatch(b *exchangev1.EventBatch, symbol string, evs []engine.Event) {
+	b.SchemaVersion, b.Symbol = SchemaVersion, symbol
+	for len(b.Events) < len(evs) {
+		b.Events = append(b.Events, &exchangev1.EngineEvent{})
+	}
+	b.Events = b.Events[:len(evs)]
+	for i := range evs {
+		FillProtoEvent(b.Events[i], &evs[i])
+	}
+}
+
 // ToProtoBatch converts the events of one command to an EventBatch.
 func ToProtoBatch(symbol string, evs []engine.Event) *exchangev1.EventBatch {
 	b := &exchangev1.EventBatch{SchemaVersion: SchemaVersion, Symbol: symbol, Events: make([]*exchangev1.EngineEvent, len(evs))}
 	for i := range evs {
-		e := &evs[i]
-		b.Events[i] = &exchangev1.EngineEvent{
-			Sequence: e.Seq, Type: toProtoType(e.Kind), TimestampNs: e.Ts,
-			OrderId: e.OrderID, AccountId: e.AccountID, Side: toProtoSide(e.Side),
-			Price: e.Price, Quantity: e.Qty, RejectReason: rejectToProto[e.Reject],
-			MakerOrderId: e.MakerOrderID, MakerAccountId: e.MakerAccountID,
-		}
+		b.Events[i] = &exchangev1.EngineEvent{}
+		FillProtoEvent(b.Events[i], &evs[i])
 	}
 	return b
 }

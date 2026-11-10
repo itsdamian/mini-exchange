@@ -34,7 +34,7 @@ type level struct {
 type Book struct {
 	slab  []order
 	free  int32
-	index map[uint64]int32 // order id -> slab index (integer key, preallocated)
+	index *idTable // order id -> slab index (preallocated open-addressing table, no allocation in steady state)
 	// bids are sorted by ascending price, asks by descending price, so the
 	// best level of each side is always the last element and removing it is a
 	// slice truncation.
@@ -55,7 +55,7 @@ func NewBook(cfg Config) *Book {
 	}
 	b := &Book{
 		slab:  make([]order, cfg.MaxOrders),
-		index: make(map[uint64]int32, cfg.MaxOrders),
+		index: newIDTable(cfg.MaxOrders),
 		bids:  make([]level, 0, cfg.MaxLevels),
 		asks:  make([]level, 0, cfg.MaxLevels),
 	}
@@ -71,7 +71,7 @@ func NewBook(cfg Config) *Book {
 func (b *Book) Seq() uint64 { return b.seq }
 
 // Len returns the number of resting orders.
-func (b *Book) Len() int { return len(b.index) }
+func (b *Book) Len() int { return b.index.len() }
 
 // BestBid returns the best bid price.
 func (b *Book) BestBid() (price int64, ok bool) {
@@ -91,7 +91,7 @@ func (b *Book) BestAsk() (price int64, ok bool) {
 
 // Resting returns the remaining quantity of a resting order.
 func (b *Book) Resting(id uint64) (qty int64, ok bool) {
-	i, ok := b.index[id]
+	i, ok := b.index.get(id)
 	if !ok {
 		return 0, false
 	}
@@ -170,7 +170,7 @@ func (b *Book) validate(c *Command) RejectReason {
 	if c.Qty <= 0 {
 		return RejectInvalidQuantity
 	}
-	if _, dup := b.index[c.OrderID]; dup {
+	if _, dup := b.index.get(c.OrderID); dup {
 		return RejectDuplicateOrderID
 	}
 	return RejectNone
@@ -228,7 +228,7 @@ match:
 				} else {
 					b.slab[lv.head].prev = nilIdx
 				}
-				delete(b.index, m.id)
+				b.index.del(m.id)
 				b.release(idx)
 			}
 		}
@@ -251,7 +251,7 @@ match:
 }
 
 func (b *Book) cancel(c *Command, out []Event) []Event {
-	i, ok := b.index[c.OrderID]
+	i, ok := b.index.get(c.OrderID)
 	if !ok || b.slab[i].account != c.AccountID {
 		return b.reject(out, c, RejectUnknownOrder)
 	}
@@ -292,7 +292,7 @@ func (b *Book) unlink(i int32) {
 		copy((*levels)[pos:], (*levels)[pos+1:])
 		*levels = (*levels)[:len(*levels)-1]
 	}
-	delete(b.index, o.id)
+	b.index.del(o.id)
 	b.release(i)
 }
 
@@ -307,7 +307,7 @@ func (b *Book) restOrder(side Side, price int64, id, account uint64, qty int64) 
 		id: id, account: account, price: price, qty: qty,
 		prev: nilIdx, next: nilIdx, side: side,
 	}
-	b.index[id] = idx
+	b.index.put(id, idx)
 
 	levels := &b.bids
 	desc := false

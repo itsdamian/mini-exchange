@@ -1,0 +1,4 @@
+    jitter_test.go:80: host jitter: 4 spinning goroutines, 20 s, GOMAXPROCS=10: longest gap 4.40975ms | gaps >= 200µs: 271 | gaps >= 1ms: 14 | gaps >= 5ms: 0 | gaps >= 10ms: 0 | gaps >= 50ms: 0
+host jitter: 4 spinning goroutines, 20 s, GOMAXPROCS=10: longest gap 4.40975ms | gaps >= 200µs: 271 | gaps >= 1ms: 14 | gaps >= 5ms: 0 | gaps >= 10ms: 0 | gaps >= 50ms: 0
+    jitter_test.go:80: host jitter: 10 spinning goroutines, 20 s, GOMAXPROCS=10: longest gap 76.345209ms | gaps >= 200µs: 18015 | gaps >= 1ms: 5216 | gaps >= 5ms: 750 | gaps >= 10ms: 164 | gaps >= 50ms: 4
+host jitter: 10 spinning goroutines, 20 s, GOMAXPROCS=10: longest gap 76.345209ms | gaps >= 200µs: 18015 | gaps >= 1ms: 5216 | gaps >= 5ms: 750 | gaps >= 10ms: 164 | gaps >= 50ms: 4

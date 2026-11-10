@@ -14,6 +14,9 @@
 #                                                   with the event log and Redis after each run (needs both above)
 #        WS=1000 KAFKA=... scripts/loadtest.sh      also run marketdata and that many WebSocket clients during the load, and
 #                                                   record marketdata's memory and the frames the clients got (FR-7)
+#        GW_EXTRA="-kafka-linger 1ms" scripts/loadtest.sh   extra gateway flags (phase 8 experiments)
+#        GW_ENV="GOGC=400 GOMEMLIMIT=2GiB" scripts/loadtest.sh   environment of the gateway process only (not the load generator)
+#        PPROF=1 scripts/loadtest.sh                capture a 20 s CPU profile and the allocation profile of the gateway
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -44,6 +47,10 @@ KAFKA="${KAFKA:-}"
 REDIS="${REDIS:-}"
 PG="${PG:-}"
 WS="${WS:-0}"
+GW_EXTRA="${GW_EXTRA:-}"
+GW_ENV="${GW_ENV:-}"   # environment for the gateway process only, e.g. "GOGC=400 GOMEMLIMIT=2GiB"
+PPROF="${PPROF:-}"
+PPROF_PORT="${PPROF_PORT:-16071}"
 MD_HTTP_PORT="${MD_HTTP_PORT:-18083}"
 [ "$WS" -gt 0 ] && { [ -n "$KAFKA" ] || { echo "WS needs KAFKA" >&2; exit 2; }; }
 PG_HTTP_PORT="${PG_HTTP_PORT:-18072}"
@@ -79,7 +86,9 @@ for run in $(seq 1 "$RUNS"); do
       -c "TRUNCATE entries, settlements, accounts" >/dev/null 2>&1 || true
     ./bin/ledger deposit -pg "$PG" -symbol "$SYMBOL" -account 1 -to "$ACCOUNTS" -base "$FUND_BASE" -quote "$FUND_QUOTE" -ref "lt-${STAMP}-${run}" >/dev/null
   fi
-  ./bin/gateway -grpc ":${GRPC_PORT}" -http ":${HTTP_PORT}" -symbol "$SYMBOL" ${GW_ARGS[@]+"${GW_ARGS[@]}"} >"$OUT/gateway-${STAMP}-run${run}.log" 2>&1 &
+  [ -n "$PPROF" ] && GW_ARGS+=(-pprof-addr "localhost:${PPROF_PORT}")
+  # shellcheck disable=SC2086  # GW_EXTRA is a list of flags on purpose
+  env $GW_ENV ./bin/gateway -grpc ":${GRPC_PORT}" -http ":${HTTP_PORT}" -symbol "$SYMBOL" ${GW_ARGS[@]+"${GW_ARGS[@]}"} $GW_EXTRA >"$OUT/gateway-${STAMP}-run${run}.log" 2>&1 &
   GW_PID=$!
   for _ in $(seq 1 50); do curl -fsS "localhost:${HTTP_PORT}/healthz" >/dev/null 2>&1 && break; sleep 0.1; done
 
@@ -100,12 +109,18 @@ for run in $(seq 1 "$RUNS"); do
     WS_PID=$!
     sleep 8   # let the clients connect before the load starts
   fi
+  if [ -n "$PPROF" ]; then
+    # 20 s of CPU profile starting 5 s into the measured period.
+    ( sleep $(( $(printf '%s' "$WARMUP" | tr -dc 0-9) + 5 ))
+      curl -fsS "localhost:${PPROF_PORT}/debug/pprof/profile?seconds=20" -o "$OUT/gateway-cpu-${TAG}-${RATE}rps-${STAMP}-${COMMIT}-run${run}.pprof" ) &
+  fi
   echo "== run ${run}/${RUNS}: ${RATE} req/s, ${DURATION} measured =="
   ./bin/loadgen -addr "localhost:${GRPC_PORT}" -symbol "$SYMBOL" -rate "$RATE" -duration "$DURATION" -warmup "$WARMUP" -conns "$CONNS" \
     -note "gateway and loadgen on the same host over loopback; event log: ${KAFKA:-none}" \
     -out "$OUT/gateway-${TAG}-${RATE}rps-${STAMP}-${COMMIT}-run${run}.json"
 
-  curl -fsS "localhost:${HTTP_PORT}/metrics" | grep -E '^(mx_|go_gc_duration_seconds)' \
+  [ -n "$PPROF" ] && curl -fsS "localhost:${PPROF_PORT}/debug/pprof/allocs" -o "$OUT/gateway-allocs-${TAG}-${RATE}rps-${STAMP}-${COMMIT}-run${run}.pprof" || true
+  curl -fsS "localhost:${HTTP_PORT}/metrics" | grep -E '^(mx_|go_gc_duration_seconds|go_memstats_alloc_bytes_total|go_memstats_mallocs_total|process_cpu_seconds_total)' \
     >"$OUT/gateway-metrics-${TAG}-${RATE}rps-${STAMP}-${COMMIT}-run${run}.txt" || true
   if [ "$WS" -gt 0 ]; then
     curl -fsS "localhost:${MD_HTTP_PORT}/metrics" | grep -E '^(mx_md_|process_resident_memory_bytes)' \

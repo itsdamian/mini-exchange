@@ -6,7 +6,7 @@
 //   - no wall-clock reads and no map iteration inside matching; timestamps are
 //     supplied by the caller (the sequencer) on every Command;
 //   - Apply performs no I/O, takes no locks, and does not allocate in steady
-//     state (the slab, level slices and index map are preallocated).
+//     state (the slab, level slices and id index are preallocated).
 //
 // A Book is NOT safe for concurrent use. One goroutine owns it.
 package engine

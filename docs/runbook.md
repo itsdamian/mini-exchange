@@ -55,6 +55,17 @@ Reset before running against a new event log: the settlement dedup remembers the
 
 The hermetic tests (`go test ./internal/risk ./internal/gateway`, not under `-short`) run against a Redis started by Testcontainers, including stopping and restarting it.
 
+## Benchmarks and profiling
+```bash
+scripts/bench-all.sh                      # every phase 8 number (about 45 minutes); QUICK=1 for a 10-minute check
+KAFKA=localhost:9092 scripts/bench-all.sh # with the Kafka event log in the path (what BENCHMARKS.md section 8 used)
+STAGES="2 7" scripts/bench-all.sh         # only some stages (see the header of the script)
+PPROF=1 scripts/loadtest.sh               # CPU and allocation profile of the gateway under load
+go tool pprof -top bench/results/gateway-cpu-*.pprof
+MX_JITTER_SECONDS=20 go test ./internal/experiments -run HostJitter -v   # what the host alone does to a tail
+```
+Run benchmarks on a quiet machine: stop other clusters and containers, and note the load average (it is recorded in `bench/results/phase8/env-*.txt`). The Docker VM alone can use several cores. Gateway flags for the experiments: `-queue-channels`, `-lock-engine-thread`, `-kafka-linger`, `-pprof-addr localhost:PORT` (unauthenticated, keep it on localhost); `GW_ENV="GOGC=400"` and `GW_EXTRA="-kafka-linger 1ms"` pass settings to the gateway process only through `scripts/loadtest.sh`.
+
 ## Kubernetes (k3d)
 ```bash
 make k8s-up        # images, cluster "mini-exchange", Argo CD, then Argo CD deploys everything (20 to 30 minutes the first time)

@@ -58,7 +58,7 @@ func (b *Book) ApplyEvents(evs []Event) error {
 			if !inbound || e.OrderID != pending.OrderID {
 				return &ReplayError{e.Seq, "trade without its accepted taker"}
 			}
-			m, ok := b.index[e.MakerOrderID]
+			m, ok := b.index.get(e.MakerOrderID)
 			if !ok || b.slab[m].qty < e.Qty || e.Qty <= 0 || e.Qty > leaves {
 				return &ReplayError{e.Seq, fmt.Sprintf("invalid trade against maker %d", e.MakerOrderID)}
 			}
@@ -77,7 +77,7 @@ func (b *Book) ApplyEvents(evs []Event) error {
 				leaves, finished = 0, true
 				continue
 			}
-			m, ok := b.index[e.OrderID]
+			m, ok := b.index.get(e.OrderID)
 			if !ok || b.slab[m].qty != e.Qty {
 				return &ReplayError{e.Seq, fmt.Sprintf("cancel of unknown or changed order %d", e.OrderID)}
 			}
@@ -91,7 +91,7 @@ func (b *Book) ApplyEvents(evs []Event) error {
 		if pending.Price <= 0 || (pending.Side != Buy && pending.Side != Sell) {
 			return &ReplayError{pending.Seq, "incoming order with a remainder cannot rest"}
 		}
-		if _, dup := b.index[pending.OrderID]; dup {
+		if _, dup := b.index.get(pending.OrderID); dup {
 			return &ReplayError{pending.Seq, "resting order id already in the book"}
 		}
 		b.restOrder(pending.Side, pending.Price, pending.OrderID, pending.AccountID, leaves)
@@ -142,7 +142,7 @@ func (b *Book) RestoreOrder(side Side, price int64, id, account uint64, qty int6
 	case price <= 0 || qty <= 0:
 		return fmt.Errorf("engine: restore order %d: invalid price or quantity", id)
 	}
-	if _, dup := b.index[id]; dup {
+	if _, dup := b.index.get(id); dup {
 		return fmt.Errorf("engine: restore order %d: duplicate id", id)
 	}
 	b.restOrder(side, price, id, account, qty)

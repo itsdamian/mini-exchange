@@ -1,0 +1,10 @@
+BenchmarkApplyMixed-10       	32086562	        42.91 ns/op	  23303249 orders/s	       0 B/op	       0 allocs/op
+BenchmarkApplyMixed-10       	31947711	        42.86 ns/op	  23331108 orders/s	       0 B/op	       0 allocs/op
+BenchmarkApplyMixed-10       	31917226	        42.91 ns/op	  23302295 orders/s	       0 B/op	       0 allocs/op
+BenchmarkApplyMixed-10       	31397106	        42.70 ns/op	  23420414 orders/s	       0 B/op	       0 allocs/op
+BenchmarkApplyMixed-10       	31559014	        42.79 ns/op	  23372289 orders/s	       0 B/op	       0 allocs/op
+BenchmarkApplyDeepBook-10    	24834030	        55.41 ns/op	  18046895 orders/s	       1 B/op	       0 allocs/op
+BenchmarkApplyDeepBook-10    	24830218	        54.70 ns/op	  18281041 orders/s	       1 B/op	       0 allocs/op
+BenchmarkApplyDeepBook-10    	25071056	        54.89 ns/op	  18218888 orders/s	       1 B/op	       0 allocs/op
+BenchmarkApplyDeepBook-10    	24438487	        59.85 ns/op	  16709097 orders/s	       1 B/op	       0 allocs/op
+BenchmarkApplyDeepBook-10    	25246834	        54.93 ns/op	  18206153 orders/s	       1 B/op	       0 allocs/op
