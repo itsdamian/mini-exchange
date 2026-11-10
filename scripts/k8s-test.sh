@@ -9,7 +9,9 @@ ok()  { echo "PASS  $*"; }
 bad() { echo "FAIL  $*"; fail=1; }
 check() { local name="$1"; shift; if "$@" >/dev/null 2>&1; then ok "$name"; else bad "$name"; fi; }
 prom() { curl -fsS --max-time 10 -G "http://localhost:19090/api/v1/query" --data-urlencode "query=$1"; }
-graf() { curl -fsS --max-time 10 -u admin:mx-local-dev "http://localhost:13000$1"; }
+# The local-development Grafana password from deploy/platform/values (override with GRAFANA_PASSWORD).
+export GRAFANA_PASSWORD="${GRAFANA_PASSWORD:-mx-local-dev}"
+graf() { curl -fsS --max-time 10 --user "admin:${GRAFANA_PASSWORD}" "http://localhost:13000$1"; }
 nonempty() { grep -q '"result":\[{'; }
 
 echo "-- GitOps"
