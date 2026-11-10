@@ -2,6 +2,7 @@ package marketdata_test
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -25,7 +26,7 @@ func TestMain(m *testing.M) {
 // The consumer rebuilds the view from what is already in the log, then follows
 // new records: the final frame equals the reference book's depth.
 func TestConsumerRebuildsThenFollowsTheLog(t *testing.T) {
-	const symbol = "MDK-USD"
+	symbol := fmt.Sprintf("MDK%d-USD", time.Now().UnixNano()) // a fresh log per run
 	b := kafkatest.Shared(t)
 	prod, err := eventlog.NewProducerClient(b.Brokers(), time.Millisecond, 1<<16)
 	require.NoError(t, err)

@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"github.com/twmb/franz-go/pkg/kadm"
+	"github.com/twmb/franz-go/pkg/kgo"
 
 	"github.com/itsdamian/mini-exchange/internal/engine"
 	"github.com/itsdamian/mini-exchange/internal/eventlog"
@@ -250,6 +252,12 @@ func TestEngineCrashRecoveryResumesWithoutGapsOrDuplicates(t *testing.T) {
 	_ = pub1
 	_ = fol1
 
+	// Records that were already on their way when the producer was cut off can
+	// still land in the log a moment later. Both recoveries below must see the
+	// same log, so wait until its end stops moving (otherwise the second one
+	// can legitimately read more than the first).
+	waitLogStable(t, b.Brokers(), symbol)
+
 	// ---- recovery: snapshot + tail must equal a clean replay
 	ropts := func() (*engine.Book, *eventlog.RecoverStats) {
 		bk, st, err := eventlog.Recover(ctx, b.Brokers(), symbol, store, bookCfg, nil)
@@ -281,4 +289,27 @@ func TestEngineCrashRecoveryResumesWithoutGapsOrDuplicates(t *testing.T) {
 	require.Greater(t, fst.LastSeq, lastBeforeRestart, "the engine resumed and kept producing")
 	require.Equal(t, p2.Stats().LastSeq, fst.LastSeq, "log end equals what the engine produced")
 	require.Equal(t, fol2.BookHash(), final.Hash(), "durable follower equals clean replay of the final log")
+}
+
+// waitLogStable returns once the end offset of the symbol's log has not
+// changed for a second.
+func waitLogStable(t *testing.T, brokers []string, symbol string) {
+	t.Helper()
+	cl, err := kgo.NewClient(kgo.SeedBrokers(brokers...))
+	require.NoError(t, err)
+	defer cl.Close()
+	adm := kadm.NewClient(cl)
+	end := func() int64 {
+		ends, err := adm.ListEndOffsets(context.Background(), eventlog.Topic(symbol))
+		require.NoError(t, err)
+		o, _ := ends.Lookup(eventlog.Topic(symbol), 0)
+		return o.Offset
+	}
+	last, since := end(), time.Now()
+	for time.Since(since) < time.Second {
+		time.Sleep(100 * time.Millisecond)
+		if cur := end(); cur != last {
+			last, since = cur, time.Now()
+		}
+	}
 }

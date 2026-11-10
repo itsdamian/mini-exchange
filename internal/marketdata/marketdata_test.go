@@ -192,9 +192,11 @@ func TestThousandClientsStableMemoryAndSlowClientDropped(t *testing.T) {
 	after := heap()
 
 	require.Greater(t, msgs.Load(), int64(n), "every client received updates")
-	// Growth beyond a few MB while the same 1,000 clients keep receiving would
-	// mean per-client queues. The book state itself is bounded.
-	require.Less(t, int64(after)-int64(before), int64(8<<20), "heap before %d after %d", before, after)
+	// The book and the frame grow a little as the market fills (and the race
+	// detector adds its own overhead: 13 MB was seen on CI). What this guards
+	// against is a queue per client: even 10 queued 4 KB frames per client
+	// would add 40 MB for 1,000 clients and keep growing with the run length.
+	require.Less(t, int64(after)-int64(before), int64(32<<20), "heap before %d after %d", before, after)
 	t.Logf("heap before=%dKB after=%dKB messages=%d", before>>10, after>>10, msgs.Load())
 }
 
