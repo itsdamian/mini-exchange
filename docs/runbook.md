@@ -55,6 +55,28 @@ Reset before running against a new event log: the settlement dedup remembers the
 
 The hermetic tests (`go test ./internal/risk ./internal/gateway`, not under `-short`) run against a Redis started by Testcontainers, including stopping and restarting it.
 
+## Kubernetes (k3d)
+```bash
+make k8s-up        # images, cluster "mini-exchange", Argo CD, then Argo CD deploys everything (20 to 30 minutes the first time)
+make k8s-seed      # fund accounts 1..16 in Redis and the ledger (once per cluster)
+make k8s-load      # RATE=2000 DURATION=120s make k8s-load: in-cluster load Job
+make k8s-test      # 28 checks of the deployment
+make k8s-validate  # offline: overlay builds, alert unit tests, metrics exist (what CI runs)
+make k8s-down      # delete the cluster and its data
+export KUBECONFIG=$PWD/.k8s/kubeconfig   # kubectl for this cluster; your own context is never changed
+```
+URLs: Grafana http://localhost:13000 (admin / mx-local-dev), Prometheus http://localhost:19090, Argo CD http://localhost:18800 (admin, password from `kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d`), gateway gRPC localhost:15051, market data `ws://localhost:18183/ws`.
+
+`k8s-up` needs about 5 GiB free in the Docker VM and refuses below 4.5 GB (`FORCE=1` overrides). On a 16 GB Docker VM that means stopping other large clusters first (`k3d cluster stop <name>`, `k3d cluster start <name>` afterwards).
+
+Changing anything under `deploy/`: run `scripts/k8s-publish.sh`; Argo CD reads the working tree from the in-cluster git server (not from GitHub) and syncs within about 30 seconds. If the `gitserver` pod restarts its repository is empty: publish again. Argo CD application state: `kubectl -n argocd get applications`.
+
+Things to know:
+- The gateway is one replica on purpose; scaling it is refused by the `mx-single-engine` admission policy. Replacing the pod recovers the engine from the snapshot volume and the log.
+- Alerts have no Alertmanager: look at Prometheus http://localhost:19090/alerts or Grafana. The rules are in `deploy/k8s/base/observability/alerts.yaml`, their unit tests next to them.
+- The seed is not idempotent for Redis (`risktool fund` adds each time); the ledger deposit is. Delete and recreate the cluster to start clean.
+- Network policy: only listed connections work. A new component that needs the network needs a rule in `deploy/k8s/base/networkpolicy.yaml`.
+
 ## Market data and bot
 ```bash
 docker compose -f deploy/docker-compose.yml up -d --wait kafka

@@ -1,0 +1,23 @@
+# The ledger database, managed by CloudNativePG. The operator generates the application user's
+# password and stores it in the Secret "mx-pg-app" (uri, password, ...), so no database password
+# is written to git.
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: mx-pg
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  instances: 1
+  imageName: ghcr.io/cloudnative-pg/postgresql:17.11-202609281634-minimal-trixie
+  bootstrap:
+    initdb:
+      database: exchange
+      owner: exchange
+  storage:
+    size: 1Gi
+  resources:
+    requests: {memory: 192Mi, cpu: 100m}
+    limits: {memory: 320Mi}
+  monitoring:
+    enablePodMonitor: false

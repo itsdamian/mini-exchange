@@ -17,8 +17,8 @@ The specification is [requirements.md](requirements.md). Significant decisions a
 | 4 | Pre-trade risk in Redis (Lua) | done |
 | 5 | Double-entry ledger in PostgreSQL, dead-letter topic, reconciliation | done |
 | 6 | Market data over WebSocket, synthetic order flow | done |
-| 7 | Kubernetes (k3d, Argo CD, Strimzi, CloudNativePG), dashboards | next |
-| 8 | Optimization report, optional standby failover | planned |
+| 7 | Kubernetes (k3d, Argo CD, Strimzi, CloudNativePG), dashboards | done |
+| 8 | Optimization report, optional standby failover | next |
 | 9 | Minimal UI (stretch) | planned |
 
 The engine, a gRPC gateway, the Kafka event log, Redis pre-trade risk the PostgreSQL ledger, a WebSocket market data feed and a synthetic order bot exist today (the ledger and the feed are fed from Kafka, not from the order path). The diagram below is the **target** architecture.
@@ -132,6 +132,19 @@ Honest limits: with a non-zero fee the ledger can refuse a buyer who spent every
 
 Honest limits: the bot is not a realistic market simulation (fixed spread, random takers, no inventory or risk model); marketdata replays the whole log at start; one symbol per process; the full-state frame trades bandwidth for simplicity.
 
+### Kubernetes and observability (phase 7)
+
+`make k8s-up` builds the images, creates a k3d cluster of its own (it never changes your kubeconfig or another cluster), installs Argo CD and lets it deploy Strimzi (Kafka), CloudNativePG (PostgreSQL), kube-prometheus-stack and the system ([ADR 0012](docs/adr/0012-kubernetes-and-gitops.md)). Then `make k8s-seed`, `make k8s-load` (an in-cluster load Job) and open Grafana at http://localhost:13000 (admin / mx-local-dev), dashboard "Mini Exchange": the latency histograms, settlement lag and a row of health counters that should be zero.
+
+- **GitOps without credentials**: the repository is private, so Argo CD reads the local working tree from a small git server inside the cluster (`scripts/k8s-publish.sh`), not from GitHub.
+- **One engine, enforced**: the gateway is a one-replica StatefulSet and an admission policy rejects scaling it.
+- **NetworkPolicy default-deny** with explicit rules; checked by tests from stranger pods.
+- **Alerts as code** (13 rules, promtool unit tests) and a CI job that checks the overlay builds and every metric used by the dashboard and alerts exists in the code.
+- **Checked on the cluster** (`make k8s-test`, 28 checks): all Argo CD apps Healthy, no restarts, the policies hold, the histograms have data in Prometheus and through Grafana's datasource, and a deleted gateway pod recovers from its snapshot and the log with the sequence continuing.
+- **Cost**: the whole stack uses about 5 GiB of the Docker VM (measured); `k8s-up` refuses to start with less than 4.5 GB free. Do not run it next to another large cluster on a 16 GB machine.
+
+Honest limits: no Sealed Secrets (nothing hand-managed to seal; the Grafana password is a local value in git), no Alertmanager, single node and single instances, Kafka 4.3.1 in the cluster versus 3.9.0 in the tests, and the rules were unit-tested but not triggered by a real fault. The in-cluster latency numbers are not comparable to the localhost benchmarks. See [BENCHMARKS.md](BENCHMARKS.md).
+
 ## Quick start
 
 Requirements: Go (version in `go.mod`), Docker with Compose, and `golangci-lint` for `make lint`.
@@ -169,6 +182,7 @@ cmd/ledger           ledger service (run), deposit, reconcile
 cmd/marketdata       WebSocket market data from the event log
 cmd/bot              synthetic order flow (market maker and random takers)
 cmd/wsload           WebSocket client load for the market data test
+deploy/k8s           Kustomize base and k3d overlay, alerts, dashboard; deploy/argocd, deploy/platform, deploy/k3d
 proto/               Protobuf API (buf managed); gen/ holds the generated Go code
 internal/gateway     gRPC server, validation, idempotency
 internal/pipeline    gateway-to-engine rings, engine goroutine, dispatcher, report hub

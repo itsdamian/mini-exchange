@@ -1,0 +1,40 @@
+# The application itself: Kustomize overlay for the local cluster. Wave 0 starts after the three
+# operators (waves -20 and -19) are Healthy, so their CRDs exist.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: mini-exchange
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: git://gitserver.gitserver.svc.cluster.local/mini-exchange.git
+    targetRevision: main
+    path: deploy/k8s/overlays/k3d
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: mx
+  # The API server fills defaults into volumeClaimTemplates (volumeMode, status), which Argo CD
+  # would show as a permanent difference on the StatefulSets.
+  ignoreDifferences:
+    - group: apps
+      kind: StatefulSet
+      jsonPointers:
+        - /spec/volumeClaimTemplates
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+    retry:
+      limit: -1
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 5m

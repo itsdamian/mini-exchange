@@ -68,6 +68,18 @@ jobs:
           exit-code: "1"
           ignore-unfixed: true
 
+  k8s:
+    # Offline checks of deploy/k8s and the monitoring files: the overlay builds, the alert rules
+    # pass promtool and their unit tests, every metric they use exists in the code.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install kustomize
+        run: |
+          curl -fsSL "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash
+          sudo mv kustomize /usr/local/bin/
+      - run: scripts/k8s-validate.sh
+
   gitleaks:
     runs-on: ubuntu-latest
     steps:

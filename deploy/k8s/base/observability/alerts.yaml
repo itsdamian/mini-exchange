@@ -1,0 +1,112 @@
+# Alert rules. Each one is about a failure this system can have; the thresholds come from the
+# measurements in BENCHMARKS.md. Unit-tested with promtool (alerts.test.yaml, scripts/k8s-test.sh).
+# No Alertmanager runs in the local cluster: firing alerts show in Prometheus and Grafana.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: mx-alerts
+spec:
+  groups:
+    - name: mx.availability
+      rules:
+        - alert: MxTargetDown
+          expr: up{namespace="mx", pod=~"gateway-.*|ledger-.*|marketdata-.*"} == 0
+          for: 2m
+          labels: {severity: critical}
+          annotations:
+            summary: "{{ $labels.pod }} is not scraped"
+            description: "Prometheus cannot scrape {{ $labels.pod }}: the process is down or not ready."
+    - name: mx.engine
+      rules:
+        - alert: MxGatewayLatencyP99High
+          # The target is p99 under 5 ms at 10k orders/s. On a laptop the measured tail was above it
+          # in some runs (BENCHMARKS.md), so this warns after 10 minutes instead of paging at once.
+          expr: histogram_quantile(0.99, sum by (le) (rate(mx_gateway_request_seconds_bucket{rpc=~".*PlaceOrder"}[5m]))) > 0.005
+          for: 10m
+          labels: {severity: warning}
+          annotations:
+            summary: "PlaceOrder p99 above 5 ms"
+            description: "p99 is {{ $value | humanizeDuration }} over the last 5 minutes."
+        - alert: MxPipelineOverloaded
+          expr: increase(mx_pipeline_overloaded_total[5m]) > 0
+          labels: {severity: warning}
+          annotations:
+            summary: "The engine input is full: orders are being refused"
+            description: "{{ $value }} commands were refused in 5 minutes because the input ring or in-flight limit was full."
+    - name: mx.eventlog
+      rules:
+        - alert: MxEventLogPublishFailing
+          # A publish error is permanent: the gateway refuses new orders from then on.
+          expr: increase(mx_eventlog_publish_errors_total[5m]) > 0
+          labels: {severity: critical}
+          annotations:
+            summary: "Publishing to the Kafka event log failed"
+            description: "The gateway has stopped accepting orders: the system of record cannot be written."
+        - alert: MxEventLogLagHigh
+          expr: histogram_quantile(0.99, sum by (le) (rate(mx_eventlog_publish_lag_seconds_bucket[5m]))) > 1
+          for: 5m
+          labels: {severity: warning}
+          annotations:
+            summary: "Kafka acknowledgements are slow"
+            description: "p99 from engine event to Kafka acknowledgement is {{ $value | humanizeDuration }}; unacknowledged events are lost if the gateway crashes."
+    - name: mx.risk
+      rules:
+        - alert: MxRiskSettleDropped
+          expr: increase(mx_risk_settle_dropped_total[10m]) > 0
+          labels: {severity: critical}
+          annotations:
+            summary: "Risk settlement operations were dropped"
+            description: "Redis balances no longer match the engine; run `ledger reconcile` against Redis and repair."
+        - alert: MxRiskSettleAnomalies
+          expr: increase(mx_risk_settle_anomalies_total[10m]) > 0
+          labels: {severity: critical}
+          annotations:
+            summary: "Redis and the engine disagree"
+            description: "A settlement operation found no reservation, or a fill larger than its reservation ({{ $labels.kind }})."
+        - alert: MxRiskSettleErrors
+          expr: increase(mx_risk_settle_errors_total[5m]) > 0
+          for: 2m
+          labels: {severity: warning}
+          annotations:
+            summary: "Redis settlement is failing"
+            description: "Settlement round trips to Redis keep failing; new orders are refused with RESOURCE_EXHAUSTED while it does."
+    - name: mx.ledger
+      rules:
+        - alert: MxLedgerDeadLetter
+          expr: increase(mx_ledger_dead_letter_total[10m]) > 0
+          labels: {severity: critical}
+          annotations:
+            summary: "A record was sent to the dead-letter topic"
+            description: "The ledger refused a record ({{ $labels.reason }}); the trade is not settled. Inspect mx.events.<symbol>.dlq."
+        - alert: MxLedgerRetrying
+          expr: increase(mx_ledger_retries_total[5m]) > 5
+          for: 2m
+          labels: {severity: warning}
+          annotations:
+            summary: "The ledger keeps retrying (PostgreSQL or Kafka trouble)"
+            description: "{{ $value }} retries in 5 minutes. Nothing is skipped, but settlement is behind."
+        - alert: MxLedgerLagHigh
+          # About 4 to 5 s mean lag was measured at 10k orders/s (BENCHMARKS.md, phase 5).
+          expr: histogram_quantile(0.99, sum by (le) (rate(mx_ledger_settle_lag_seconds_bucket[5m]))) > 30
+          for: 10m
+          labels: {severity: warning}
+          annotations:
+            summary: "The ledger is far behind the engine"
+            description: "p99 from engine event to PostgreSQL commit is {{ $value | humanizeDuration }}."
+        - alert: MxLedgerStalled
+          # The log is moving but the ledger has not committed anything for 5 minutes.
+          expr: (time() - max(mx_ledger_last_settle_timestamp_seconds) > 300) and on() (increase(mx_eventlog_batches_acked_total[5m]) > 0)
+          for: 5m
+          labels: {severity: critical}
+          annotations:
+            summary: "The ledger has stopped settling"
+            description: "No record committed for over 5 minutes while the event log is growing."
+    - name: mx.marketdata
+      rules:
+        - alert: MxMarketDataSlowClients
+          expr: rate(mx_md_slow_disconnects_total[5m]) > 0.1
+          for: 5m
+          labels: {severity: warning}
+          annotations:
+            summary: "Market data clients are being disconnected for being slow"
+            description: "{{ $value | humanize }} disconnections per second."

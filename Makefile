@@ -1,4 +1,4 @@
-.PHONY: build test test-full lint proto bench bench-report bench-recovery loadtest chaos up down smoke
+.PHONY: build test test-full lint proto bench bench-report bench-recovery loadtest chaos up down smoke k8s-validate k8s-up k8s-seed k8s-load k8s-test k8s-down
 
 build:
 	go build ./...
@@ -51,3 +51,23 @@ down:
 
 smoke:
 	curl -fsS localhost:$${GATEWAY_PORT:-18080}/healthz && curl -fsS localhost:$${GATEWAY_PORT:-18080}/metrics | grep -q go_goroutines && echo "smoke ok"
+
+# Kubernetes (k3d + Argo CD + Strimzi + CloudNativePG + kube-prometheus-stack); see docs/runbook.md.
+k8s-validate:
+	./scripts/k8s-validate.sh
+
+# One command from nothing to the whole system on a local cluster (needs about 4 GB of Docker memory).
+k8s-up:
+	./scripts/k8s-up.sh
+
+k8s-seed:
+	./scripts/k8s-seed.sh
+
+k8s-load:
+	./scripts/k8s-load.sh
+
+k8s-test:
+	./scripts/k8s-test.sh
+
+k8s-down:
+	./scripts/k8s-down.sh

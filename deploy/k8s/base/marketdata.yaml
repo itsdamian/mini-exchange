@@ -1,0 +1,59 @@
+# WebSocket market data from the event log. It only reads Kafka; it never talks to the engine.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: marketdata
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector:
+    matchLabels: {app.kubernetes.io/name: marketdata}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: marketdata
+        app.kubernetes.io/part-of: mini-exchange
+        mx.io/metrics: "true"
+    spec:
+      securityContext: {runAsNonRoot: true, runAsUser: 65532, runAsGroup: 65532, seccompProfile: {type: RuntimeDefault}}
+      initContainers:
+        # Argo CD cannot tell when Kafka, PostgreSQL or Redis accept connections (their custom
+        # resources report Healthy early), and a new pod can briefly be cut off by the network
+        # policy controller. Wait here instead of crash-looping once.
+        - name: wait-for-dependencies
+          image: busybox:1.37
+          command: ["sh", "-c", "for t in mx-kafka-kafka-bootstrap:9092; do until nc -z -w 2 ${t%:*} ${t#*:}; do echo waiting for $t; sleep 2; done; done"]
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+          resources:
+            requests: {memory: 8Mi, cpu: 5m}
+            limits: {memory: 32Mi}
+      containers:
+        - name: marketdata
+          image: mx/marketdata:dev
+          imagePullPolicy: IfNotPresent
+          args:
+            - -kafka=mx-kafka-kafka-bootstrap:9092
+            - -http=:8083
+            - -max-orders=131072
+          ports:
+            - {name: metrics, containerPort: 8083}   # /ws, /metrics, /healthz
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+          resources:
+            requests: {memory: 96Mi, cpu: 50m}
+            limits: {memory: 384Mi}
+          readinessProbe:
+            httpGet: {path: /readyz, port: metrics}
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: {path: /healthz, port: metrics}
+            periodSeconds: 10
+            failureThreshold: 6
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: marketdata
+spec:
+  selector: {app.kubernetes.io/name: marketdata}
+  ports:
+    - {name: http, port: 8083, targetPort: metrics}

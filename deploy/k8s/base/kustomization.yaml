@@ -1,0 +1,17 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: mx
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: mini-exchange
+    includeSelectors: false
+resources:
+  - kafka.yaml
+  - postgres.yaml
+  - redis.yaml
+  - gateway.yaml
+  - ledger.yaml
+  - marketdata.yaml
+  - networkpolicy.yaml
+  - policy-single-engine.yaml
+  - observability

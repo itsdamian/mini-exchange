@@ -1,0 +1,71 @@
+# Argo CD, non-HA, for a one-node local cluster. Adapted from the cube_test platform values.
+dex:
+  enabled: false                   # local admin user only
+notifications:
+  enabled: false
+applicationSet:
+  enabled: false                   # not used: the apps are listed in deploy/argocd/apps
+configs:
+  params:
+    server.insecure: true          # no TLS locally
+  cm:
+    # Argo CD polls the in-cluster git server every 30 s (nothing can call a webhook).
+    timeout.reconciliation: 30s
+    timeout.reconciliation.jitter: 0s
+    # App of apps: let the root Application wait for each child to be Healthy before the next
+    # sync wave (otherwise the waves only order creation, and mini-exchange would sync before
+    # the Strimzi, CloudNativePG and Prometheus CRDs exist). A child counts as Healthy only when
+    # it is not syncing and its last sync succeeded at the revision git has now.
+    resource.customizations.health.argoproj.io_Application: |
+      local function revs(t)
+        if t == nil then return nil end
+        if t.revisions ~= nil and #t.revisions > 0 then return table.concat(t.revisions, ",") end
+        if t.revision ~= nil and t.revision ~= "" then return t.revision end
+        return nil
+      end
+      hs = {status = "Progressing", message = "waiting for the first health assessment"}
+      if obj.status == nil or obj.status.health == nil then return hs end
+      local health = obj.status.health
+      if health.status ~= "Healthy" then
+        hs.status = health.status
+        hs.message = health.message or ""
+        return hs
+      end
+      local op = obj.status.operationState
+      local sync = obj.status.sync
+      if op ~= nil and (op.phase == "Running" or op.phase == "Terminating") then
+        hs.message = "sync in progress"
+        return hs
+      end
+      if sync ~= nil and sync.status == "Synced" then
+        hs.status = "Healthy"
+        hs.message = health.message or ""
+        return hs
+      end
+      local current = revs(sync)
+      if op ~= nil and op.phase == "Succeeded" and current ~= nil and revs(op.syncResult) == current then
+        hs.status = "Healthy"
+        hs.message = "OutOfSync after a successful sync of the current revision (manual change)"
+        return hs
+      end
+      hs.message = "not synced to the current revision yet"
+      return hs
+controller:
+  resources:
+    requests: {memory: 384Mi, cpu: 100m}
+    limits: {memory: 1Gi}          # caches every managed resource and the operators' CRDs
+repoServer:
+  resources:
+    requests: {memory: 96Mi, cpu: 50m}
+    limits: {memory: 256Mi}
+server:
+  service:
+    type: NodePort
+    nodePortHttp: 30800
+  resources:
+    requests: {memory: 64Mi, cpu: 20m}
+    limits: {memory: 128Mi}
+redis:
+  resources:
+    requests: {memory: 32Mi, cpu: 10m}
+    limits: {memory: 64Mi}

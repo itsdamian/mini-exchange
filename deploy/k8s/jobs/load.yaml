@@ -1,0 +1,27 @@
+# A short open-loop load against the gateway so the dashboards have something to show.
+# Applied by scripts/k8s-load.sh (RATE and DURATION are substituted there).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: loadgen
+  namespace: mx
+  labels: {app.kubernetes.io/part-of: mini-exchange}
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: loadgen, app.kubernetes.io/part-of: mini-exchange}
+    spec:
+      restartPolicy: Never
+      securityContext: {runAsNonRoot: true, runAsUser: 65532, seccompProfile: {type: RuntimeDefault}}
+      containers:
+        - name: loadgen
+          image: mx/loadgen:dev
+          imagePullPolicy: IfNotPresent
+          args: [-addr=gateway:50051, -symbol=BTC-USD, -rate=@RATE@, -duration=@DURATION@, -warmup=5s, -conns=4, -out=/tmp/result.json]
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: tmp
+          emptyDir: {}

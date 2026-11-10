@@ -297,3 +297,20 @@ Setup: same laptop (Apple M5, 10 logical CPUs), `GOMAXPROCS=4` for the gateway, 
 - **Identical event streams**: through the real gRPC gateway and engine, two runs of the bot over the same 400 prices of the price file with seed 42 produce identical event streams (timestamps excluded, they come from the wall clock), including more than 100 trades and more than 1,000 cancels; seed 43 gives a different stream (`TestSameFileAndSeedGiveIdenticalEventStreams`).
 - **Offline**: the Coinbase source is tested against a fake server, and a test asserts that dialing the real feed URL is refused before any traffic (`internal/nonet`). The price file in `data/` is synthetic, not a recording.
 
+## Phase 7: Kubernetes (k3d) and observability
+
+This phase is about deployment, not speed. The numbers below only show that the dashboards have data; they are **not** comparable to the localhost benchmarks above.
+
+Setup: Apple M5, 10 logical CPUs, Docker Desktop with 16 GB; one k3d node (k3s v1.35.5) running Argo CD, Strimzi (Kafka 4.3.1, one KRaft node), CloudNativePG (PostgreSQL 17, one instance), kube-prometheus-stack and the application; the gateway has `GOMAXPROCS=2` and no CPU limit; the load generator runs as a Job in the same cluster, so it shares the 10 cores with the whole stack.
+
+### 7.1 What was measured
+- **Deployment check** (`scripts/k8s-test.sh`, after seeding and 60 s of load at 2,000 orders/s): 28 of 28 checks pass: the five Argo CD applications Synced and Healthy; gateway, Redis, ledger and market data ready with no restarts; Kafka and PostgreSQL Ready; a second engine replica refused; a stranger pod cannot reach Redis and a pod from another namespace cannot reach PostgreSQL or Kafka; Prometheus scrapes the three application targets; the PlaceOrder latency, engine match time and ledger lag histograms have data; the alert rules are loaded; Grafana has the "Mini Exchange" dashboard and its Prometheus datasource returns the PlaceOrder latency query.
+- **Recovery**: deleting the gateway pod, it came back ready from its snapshot volume and the log, and the engine sequence continued (337,903 before and after; no restart from 1).
+- **In-cluster load, 2,000 orders/s for 60 s, 120,000 requests, 0 errors** (two runs): p50 535 and 539 µs, p99 4,427 and 5,731 µs, p99.9 74,175 and 36,127 µs. This is the load generator in a pod through the k3d network, with the gateway on 2 cores, next to everything else.
+- **Memory** (working set, after the load): Kafka 663 MiB, PostgreSQL 171 MiB, gateway 75 MiB, marketdata 37 MiB, ledger 14 MiB, Redis 10 MiB. The whole k3d node (operators, Argo CD, Prometheus, Grafana included) was **5.0 GiB**.
+
+### 7.2 What this does not say
+- Time from nothing to Healthy was not measured. The working run, with the images already pulled once, took on the order of 20 to 30 minutes by my watch, most of it image pulls; the first attempt failed on the git protocol (ADR 0012) and the first healthy deployment had one start-up restart per service before the init containers were added. I did not time a clean run end to end.
+- The latency figures are one cluster on one laptop, two runs, not a result about the system's speed.
+- The alert rules are unit-tested with promtool but were not made to fire on a real fault; reconciliation against the cluster's databases and a browser look at the dashboard were not done (ADR 0012).
+

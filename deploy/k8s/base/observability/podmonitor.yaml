@@ -1,0 +1,13 @@
+# One PodMonitor for every mini-exchange pod that exposes Prometheus metrics (label
+# mx.io/metrics, container port "metrics").
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: mx
+spec:
+  selector:
+    matchLabels: {mx.io/metrics: "true"}
+  podMetricsEndpoints:
+    - port: metrics
+      path: /metrics
+      interval: 5s

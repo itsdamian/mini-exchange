@@ -1,0 +1,55 @@
+# The event log (system of record): one KRaft node (controller and broker) managed by Strimzi.
+# Topics are created by the applications (the gateway creates mx.events.<symbol> with infinite
+# retention, the ledger its dead-letter topic), so the Entity Operator is not deployed.
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaNodePool
+metadata:
+  name: dual-role
+  labels:
+    strimzi.io/cluster: mx-kafka
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"   # Healthy before the applications start
+spec:
+  replicas: 1
+  roles: [controller, broker]
+  storage:
+    type: jbod
+    volumes:
+      - id: 0
+        type: persistent-claim
+        size: 2Gi
+        deleteClaim: false
+        kraftMetadata: shared
+  resources:
+    requests: {memory: 768Mi, cpu: 200m}
+    limits: {memory: 1Gi}
+  jvmOptions:
+    "-Xms": 384m
+    "-Xmx": 384m
+---
+apiVersion: kafka.strimzi.io/v1
+kind: Kafka
+metadata:
+  name: mx-kafka
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  kafka:
+    version: 4.3.1
+    metadataVersion: 4.3-IV0
+    listeners:
+      - name: plain
+        port: 9092
+        type: internal
+        tls: false                # in-cluster only
+        # Strimzi generates a NetworkPolicy per listener; without peers it would allow every
+        # source on 9092 and, policies being additive, undo the default deny. Only pods of this
+        # namespace may connect.
+        networkPolicyPeers:
+          - podSelector: {}
+    config:
+      offsets.topic.replication.factor: 1
+      transaction.state.log.replication.factor: 1
+      transaction.state.log.min.isr: 1
+      default.replication.factor: 1
+      min.insync.replicas: 1

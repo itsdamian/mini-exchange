@@ -1,0 +1,26 @@
+# The only object applied by hand (scripts/k8s-up.sh): Argo CD then manages everything in
+# deploy/argocd/apps (app of apps) from the in-cluster git server (deploy/platform/gitserver.yaml).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: root
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: git://gitserver.gitserver.svc.cluster.local/mini-exchange.git
+    targetRevision: main
+    path: deploy/argocd/apps
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      limit: -1
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 5m

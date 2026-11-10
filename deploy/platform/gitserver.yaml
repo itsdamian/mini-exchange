@@ -1,0 +1,53 @@
+# A tiny read-only git server inside the cluster, so Argo CD deploys exactly what is in the local
+# working tree, with no GitHub credentials in the cluster (the repository is private).
+# scripts/k8s-publish.sh puts a bare repository under /srv and `git daemon` serves it read-only
+# over git:// (Argo CD's git client does not speak "dumb" HTTP, and alpine/git has no
+# http-backend). The repository lives in an emptyDir: if the pod restarts, run
+# scripts/k8s-publish.sh again. The git-daemon package is installed when the pod starts.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: gitserver
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gitserver
+  namespace: gitserver
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: gitserver}
+  template:
+    metadata:
+      labels: {app: gitserver}
+    spec:
+      containers:
+        - name: git
+          image: alpine/git:latest
+          command: ["sh", "-c"]
+          args:
+            - apk add --no-cache git-daemon >/dev/null && exec git daemon --export-all --reuseaddr --base-path=/srv --listen=0.0.0.0 --port=9418
+          ports:
+            - {name: git, containerPort: 9418}
+          volumeMounts:
+            - {name: repo, mountPath: /srv}
+          resources:
+            requests: {memory: 16Mi, cpu: 5m}
+            limits: {memory: 64Mi}
+          readinessProbe:
+            tcpSocket: {port: git}
+            periodSeconds: 3
+      volumes:
+        - name: repo
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gitserver
+  namespace: gitserver
+spec:
+  selector: {app: gitserver}
+  ports:
+    - {name: git, port: 9418, targetPort: git}

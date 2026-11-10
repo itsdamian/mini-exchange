@@ -1,0 +1,58 @@
+# Prometheus and Grafana for mini-exchange, trimmed for a laptop: no Alertmanager (the alert rules
+# are evaluated and visible in Prometheus and Grafana, nothing is routed anywhere) and no node
+# exporter (it would only describe the Docker VM).
+defaultRules:
+  disabled:
+    NodeClockNotSynchronising: true   # no NTP in the Docker VM: it would fire forever
+alertmanager:
+  enabled: false
+prometheus-node-exporter:
+  enabled: false
+nodeExporter:
+  enabled: false
+prometheus:
+  service:
+    type: NodePort
+    nodePort: 30090
+  prometheusSpec:
+    retention: 2d
+    # Select ALL rules and monitors, not only those labelled with this Helm release: ours carry
+    # no "release" label and would be ignored silently.
+    ruleSelectorNilUsesHelmValues: false
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    probeSelectorNilUsesHelmValues: false
+    scrapeConfigSelectorNilUsesHelmValues: false
+    resources:
+      requests: {memory: 384Mi, cpu: 100m}
+      limits: {memory: 1Gi}
+grafana:
+  # Local development only: this password is in git on purpose, the cluster is not reachable from
+  # outside the machine. (ADR 0012: no Sealed Secrets in this phase.)
+  adminPassword: mx-local-dev
+  service:
+    type: NodePort
+    nodePort: 30300
+  # Grafana idles at about 480 MiB and was OOM-killed at 256 MiB during start-up in cube_test.
+  resources:
+    requests: {memory: 384Mi, cpu: 50m}
+    limits: {memory: 768Mi}
+  sidecar:
+    dashboards:
+      enabled: true
+      label: grafana_dashboard
+      labelValue: "1"
+      searchNamespace: ALL
+kube-state-metrics:
+  resources:
+    requests: {memory: 32Mi, cpu: 10m}
+    limits: {memory: 96Mi}
+prometheusOperator:
+  resources:
+    requests: {memory: 64Mi, cpu: 20m}
+    limits: {memory: 128Mi}
+# k3s runs these inside the server process; they have no scrape endpoints here.
+kubeControllerManager: {enabled: false}
+kubeScheduler: {enabled: false}
+kubeProxy: {enabled: false}
+kubeEtcd: {enabled: false}

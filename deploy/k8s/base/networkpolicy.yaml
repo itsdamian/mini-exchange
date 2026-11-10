@@ -1,0 +1,167 @@
+# Default deny, then exactly the connections the system needs. NetworkPolicies are additive, so
+# everything below only opens what is listed. Enforced by k3s' embedded network policy controller.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: kube-system}}
+      ports:
+        - {protocol: UDP, port: 53}
+        - {protocol: TCP, port: 53}
+---
+# Prometheus (namespace monitoring) scrapes every pod labelled mx.io/metrics.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-prometheus-scrape
+spec:
+  podSelector: {matchLabels: {mx.io/metrics: "true"}}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: monitoring}}
+      ports:
+        - {protocol: TCP, port: 8080}
+        - {protocol: TCP, port: 8082}
+        - {protocol: TCP, port: 8083}
+---
+# Clients reach the gateway and the market data feed from outside the namespace (through the
+# NodePorts of the local cluster) and from the load Job. This is a local development cluster;
+# a real deployment would put an ingress with authentication in front.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-client-ingress
+spec:
+  podSelector:
+    matchExpressions:
+      - {key: app.kubernetes.io/name, operator: In, values: [gateway, marketdata]}
+  policyTypes: [Ingress]
+  ingress:
+    - ports:
+        - {protocol: TCP, port: 50051}
+        - {protocol: TCP, port: 8080}
+        - {protocol: TCP, port: 8083}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: gateway-egress
+spec:
+  podSelector: {matchLabels: {app.kubernetes.io/name: gateway}}
+  policyTypes: [Egress]
+  egress:
+    - to: [{podSelector: {matchLabels: {app.kubernetes.io/name: redis}}}]
+      ports: [{protocol: TCP, port: 6379}]
+    - to: [{podSelector: {matchLabels: {strimzi.io/cluster: mx-kafka}}}]
+      ports: [{protocol: TCP, port: 9092}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ledger-egress
+spec:
+  podSelector: {matchLabels: {app.kubernetes.io/name: ledger}}
+  policyTypes: [Egress]
+  egress:
+    - to: [{podSelector: {matchLabels: {cnpg.io/cluster: mx-pg}}}]
+      ports: [{protocol: TCP, port: 5432}]
+    - to: [{podSelector: {matchLabels: {strimzi.io/cluster: mx-kafka}}}]
+      ports: [{protocol: TCP, port: 9092}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: marketdata-egress
+spec:
+  podSelector: {matchLabels: {app.kubernetes.io/name: marketdata}}
+  policyTypes: [Egress]
+  egress:
+    - to: [{podSelector: {matchLabels: {strimzi.io/cluster: mx-kafka}}}]
+      ports: [{protocol: TCP, port: 9092}]
+---
+# The one-off Jobs in deploy/k8s/jobs: seed the balances, drive load.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: jobs-egress
+spec:
+  podSelector:
+    matchExpressions:
+      - {key: app.kubernetes.io/name, operator: In, values: [seed-redis, seed-ledger, loadgen]}
+  policyTypes: [Egress]
+  egress:
+    - to: [{podSelector: {matchLabels: {app.kubernetes.io/name: redis}}}]
+      ports: [{protocol: TCP, port: 6379}]
+    - to: [{podSelector: {matchLabels: {cnpg.io/cluster: mx-pg}}}]
+      ports: [{protocol: TCP, port: 5432}]
+    - to: [{podSelector: {matchLabels: {app.kubernetes.io/name: gateway}}}]
+      ports: [{protocol: TCP, port: 50051}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: redis-ingress
+spec:
+  podSelector: {matchLabels: {app.kubernetes.io/name: redis}}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - {key: app.kubernetes.io/name, operator: In, values: [gateway, seed-redis]}
+      ports: [{protocol: TCP, port: 6379}]
+---
+# PostgreSQL: the ledger and the seed Job connect; the CloudNativePG operator (namespace
+# cnpg-system) reads the instance status on 8000. The instance manager in the pod itself talks to
+# the Kubernetes API, which needs an egress rule (the API server address is not a pod).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: postgres
+spec:
+  podSelector: {matchLabels: {cnpg.io/cluster: mx-pg}}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - {key: app.kubernetes.io/name, operator: In, values: [ledger, seed-ledger]}
+      ports: [{protocol: TCP, port: 5432}]
+    - from:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: cnpg-system}}
+      ports:
+        - {protocol: TCP, port: 8000}
+        - {protocol: TCP, port: 5432}
+    - from:
+        - podSelector: {matchLabels: {cnpg.io/cluster: mx-pg}}
+  egress:
+    - ports:
+        - {protocol: TCP, port: 6443}
+        - {protocol: TCP, port: 443}
+    - to: [{podSelector: {matchLabels: {cnpg.io/cluster: mx-pg}}}]
+---
+# Kafka: Strimzi generates the policies for its own listeners and for the operator. The broker
+# pod only needs DNS (above) and itself.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kafka-egress
+spec:
+  podSelector: {matchLabels: {strimzi.io/cluster: mx-kafka}}
+  policyTypes: [Egress]
+  egress:
+    - to: [{podSelector: {matchLabels: {strimzi.io/cluster: mx-kafka}}}]

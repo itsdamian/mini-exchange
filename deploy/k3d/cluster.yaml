@@ -1,0 +1,30 @@
+# Local cluster for mini-exchange: one k3s node in Docker.
+#   scripts/k8s-up.sh creates it; scripts/k8s-down.sh deletes it with all its data.
+# It is a separate cluster from any other k3d cluster on the machine and never touches the
+# default kubeconfig or the current kubectl context (scripts/k8s-up.sh writes its own file).
+apiVersion: k3d.io/v1alpha5
+kind: Simple
+metadata:
+  name: mini-exchange
+servers: 1
+agents: 0
+image: rancher/k3s:v1.35.5-k3s1      # pinned
+ports:
+  # Host port -> k3d load balancer -> NodePort of the cluster (the NodePorts are set in
+  # deploy/k8s/overlays/k3d and deploy/platform/values).
+  - {port: "13000:30300", nodeFilters: [loadbalancer]}   # Grafana
+  - {port: "19090:30090", nodeFilters: [loadbalancer]}   # Prometheus
+  - {port: "18800:30800", nodeFilters: [loadbalancer]}   # Argo CD
+  - {port: "15051:30051", nodeFilters: [loadbalancer]}   # gateway gRPC
+  - {port: "18180:30080", nodeFilters: [loadbalancer]}   # gateway HTTP (/metrics, /readyz)
+  - {port: "18183:30083", nodeFilters: [loadbalancer]}   # market data WebSocket (/ws)
+options:
+  k3s:
+    extraArgs:
+      # Not needed here; each one costs memory on a laptop.
+      - {arg: --disable=traefik, nodeFilters: ["server:*"]}
+      - {arg: --disable=servicelb, nodeFilters: ["server:*"]}
+      - {arg: --disable=metrics-server, nodeFilters: ["server:*"]}
+  kubeconfig:
+    updateDefaultKubeconfig: false
+    switchCurrentContext: false

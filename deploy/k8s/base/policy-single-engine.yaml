@@ -1,0 +1,32 @@
+# The engine is a single writer: two gateway pods would both claim the sequence numbers of the
+# event log. This rejects replicas > 1, including `kubectl scale` (the scale subresource).
+# Cluster-scoped.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: mx-single-engine
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [apps]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE]
+        resources: [statefulsets, statefulsets/scale]
+  matchConditions:
+    - name: is-gateway
+      expression: "object.metadata.name == 'gateway'"
+  validations:
+    - expression: "!has(object.spec.replicas) || object.spec.replicas <= 1"
+      message: "the gateway runs the matching engine, a single writer: at most 1 replica"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: mx-single-engine
+spec:
+  policyName: mx-single-engine
+  validationActions: [Deny]
+  matchResources:
+    namespaceSelector:
+      matchLabels: {kubernetes.io/metadata.name: mx}

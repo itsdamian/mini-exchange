@@ -1,0 +1,101 @@
+# promtool unit tests for alerts.yaml. scripts/k8s-test.sh extracts spec.groups from the
+# PrometheusRule into a plain rules file and runs `promtool test rules` against this file.
+rule_files:
+  - /tmp/mx-rules.yaml
+evaluation_interval: 1m
+tests:
+  - name: dead letter fires on any new dead-lettered record
+    interval: 1m
+    input_series:
+      - series: 'mx_ledger_dead_letter_total{reason="constraint", pod="ledger-x"}'
+        values: '0 0 0 1 1 1 1 1 1 1 1 1 1 1 1'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: MxLedgerDeadLetter
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: MxLedgerDeadLetter
+        exp_alerts:
+          - exp_labels: {severity: critical, reason: constraint, pod: ledger-x}
+            exp_annotations:
+              summary: "A record was sent to the dead-letter topic"
+              description: "The ledger refused a record (constraint); the trade is not settled. Inspect mx.events.<symbol>.dlq."
+      - eval_time: 14m
+        alertname: MxLedgerDeadLetter
+        exp_alerts: []
+  - name: risk settlement drop is critical at once
+    interval: 1m
+    input_series:
+      - series: 'mx_risk_settle_dropped_total{pod="gateway-0"}'
+        values: '0 0 5 5 5'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: MxRiskSettleDropped
+        exp_alerts:
+          - exp_labels: {severity: critical, pod: gateway-0}
+            exp_annotations:
+              summary: "Risk settlement operations were dropped"
+              description: "Redis balances no longer match the engine; run `ledger reconcile` against Redis and repair."
+  - name: ledger stalled needs a growing log and an old last commit
+    interval: 1m
+    input_series:
+      # last commit at t=0, never updated again
+      - series: 'mx_ledger_last_settle_timestamp_seconds{pod="ledger-x"}'
+        values: '0+0x20'
+      # the log keeps growing
+      - series: 'mx_eventlog_batches_acked_total{pod="gateway-0"}'
+        values: '0+100x20'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: MxLedgerStalled
+        exp_alerts: []          # old enough (300 s) but the `for: 5m` has not elapsed
+      - eval_time: 12m
+        alertname: MxLedgerStalled
+        exp_alerts:
+          - exp_labels: {severity: critical}
+            exp_annotations:
+              summary: "The ledger has stopped settling"
+              description: "No record committed for over 5 minutes while the event log is growing."
+  - name: ledger stall does not fire when the log is idle
+    interval: 1m
+    input_series:
+      - series: 'mx_ledger_last_settle_timestamp_seconds{pod="ledger-x"}'
+        values: '0+0x20'
+      - series: 'mx_eventlog_batches_acked_total{pod="gateway-0"}'
+        values: '7+0x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: MxLedgerStalled
+        exp_alerts: []
+  - name: gateway p99 above 5 ms for 10 minutes warns
+    interval: 1m
+    input_series:
+      # every request in the 8 ms to 16 ms bucket: p99 is above 5 ms
+      - series: 'mx_gateway_request_seconds_bucket{rpc="/exchange.v1.OrderGatewayService/PlaceOrder", code="OK", le="0.004096"}'
+        values: '0+0x30'
+      - series: 'mx_gateway_request_seconds_bucket{rpc="/exchange.v1.OrderGatewayService/PlaceOrder", code="OK", le="0.008192"}'
+        values: '0+600x30'
+      - series: 'mx_gateway_request_seconds_bucket{rpc="/exchange.v1.OrderGatewayService/PlaceOrder", code="OK", le="+Inf"}'
+        values: '0+600x30'
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: MxGatewayLatencyP99High
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: MxGatewayLatencyP99High
+        exp_alerts:
+          - exp_labels: {severity: warning}
+            exp_annotations:
+              summary: "PlaceOrder p99 above 5 ms"
+              description: "p99 is 8.151ms over the last 5 minutes."
+  - name: gateway p99 below 5 ms is quiet
+    interval: 1m
+    input_series:
+      - series: 'mx_gateway_request_seconds_bucket{rpc="/exchange.v1.OrderGatewayService/PlaceOrder", code="OK", le="0.000256"}'
+        values: '0+600x30'
+      - series: 'mx_gateway_request_seconds_bucket{rpc="/exchange.v1.OrderGatewayService/PlaceOrder", code="OK", le="+Inf"}'
+        values: '0+600x30'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: MxGatewayLatencyP99High
+        exp_alerts: []
