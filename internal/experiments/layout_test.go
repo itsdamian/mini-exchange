@@ -43,3 +43,10 @@ func TestOrderLayoutSizes(t *testing.T) {
 		t.Fatalf("padded layout should fill a cache line, got %d", padded)
 	}
 }
+
+// Only the sizes matter; these keep every field "used" for the linter.
+var (
+	_ = orderPacked{id: 1, account: 1, price: 1, qty: 1, prev: 1, next: 1, side: 1}
+	_ = orderCareless{side: 1, id: 1, prev: 1, account: 1, next: 1, price: 1, qty: 1}
+	_ = orderPadded{orderPacked: orderPacked{id: 1}}
+)

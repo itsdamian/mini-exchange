@@ -26,7 +26,7 @@ Requirements section 5.3 lists nine experiments, each to be a before/after entry
 
 ## Consequences and limits
 - **The tail is explained, not fixed.** A control (code that only reads the clock) shows the same kind of stalls, GC and thread pinning do not change it, and the profile shows the matcher is not where time goes. The explanation is the host; the confirmation (a quiet or dedicated machine) has not been done.
-- **The micro-experiments are isolated mechanisms.** Where they and the system disagree, the system measurement wins (rings against channels is an example: the isolated ring numbers were even worse than the system numbers suggest, the isolated benchmark saturates the queue).
+- **The micro-experiments are isolated mechanisms.** Where they and the system disagree, the system measurement wins (rings against channels is an example: the isolated benchmark made the ring look 3 to 7 times slower, because it saturates the queue, while the whole gateway differed by about 25% at the median).
 - **Results are one laptop, 3 to 5 runs.** Medians are stable, p99.9 and max are not. No statistical claim is made.
 - **FR-9 (a hot standby engine) was not started.** It is marked optional in the requirements, and the experiments gave no reason to expect it to fit in this phase.
 - **The stage-1 comparison uses the previous commit as the baseline** (`BASELINE` in the script); it keeps working only while that commit exists in the history.
