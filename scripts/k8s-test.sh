@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Checks a running cluster (scripts/k8s-up.sh), after scripts/k8s-seed.sh and scripts/k8s-load.sh.
+# Checks a running cluster (scripts/k8s-up.sh), after scripts/k8s-seed.sh and scripts/k8s-load.sh
+# (the histogram checks look back one hour, so the load must have run within that time).
 # Prints one line per check and exits non-zero if any failed.
 set -uo pipefail
 source "$(dirname "$0")/k8s-lib.sh"
@@ -40,13 +41,13 @@ check "default-deny: a pod in another namespace cannot reach Kafka" bash -c "$(d
 echo "-- observability"
 up_count() { prom 'count(up{namespace="mx", pod=~"gateway-.*|ledger-.*|marketdata-.*"} == 1)' | python3 -c 'import json,sys; r=json.load(sys.stdin)["data"]["result"]; print(r[0]["value"][1] if r else 0)'; }
 [ "$(up_count)" = 3 ] && ok "Prometheus scrapes gateway, ledger and marketdata (3 targets up)" || bad "Prometheus scrapes $(up_count) of 3 targets"
-check "latency histogram has data (mx_gateway_request_seconds)" bash -c "$(declare -f prom nonempty); prom 'histogram_quantile(0.99, sum by (le) (rate(mx_gateway_request_seconds_bucket[5m])))' | nonempty"
-check "engine match-time histogram has data" bash -c "$(declare -f prom nonempty); prom 'histogram_quantile(0.99, sum by (le) (rate(mx_engine_match_seconds_bucket[5m])))' | nonempty"
-check "ledger lag histogram has data" bash -c "$(declare -f prom nonempty); prom 'histogram_quantile(0.99, sum by (le) (rate(mx_ledger_settle_lag_seconds_bucket[5m])))' | nonempty"
+check "latency histogram has data (mx_gateway_request_seconds)" bash -c "$(declare -f prom nonempty); prom 'histogram_quantile(0.99, sum by (le) (rate(mx_gateway_request_seconds_bucket[1h])))' | nonempty"
+check "engine match-time histogram has data" bash -c "$(declare -f prom nonempty); prom 'histogram_quantile(0.99, sum by (le) (rate(mx_engine_match_seconds_bucket[1h])))' | nonempty"
+check "ledger lag histogram has data" bash -c "$(declare -f prom nonempty); prom 'histogram_quantile(0.99, sum by (le) (rate(mx_ledger_settle_lag_seconds_bucket[1h])))' | nonempty"
 check "alert rules are loaded in Prometheus" bash -c "curl -fsS http://localhost:19090/api/v1/rules | grep -q MxLedgerDeadLetter"
 check "Grafana has the Mini Exchange dashboard" bash -c "$(declare -f graf); graf '/api/search?query=Mini%20Exchange' | grep -q mini-exchange"
 # Run the latency panel's query through Grafana's own datasource: the dashboard shows data, not just exists.
-q='histogram_quantile(0.99, sum by (le) (rate(mx_gateway_request_seconds_bucket{rpc=~".*PlaceOrder"}[5m])))'
+q='histogram_quantile(0.99, sum by (le) (rate(mx_gateway_request_seconds_bucket{rpc=~".*PlaceOrder"}[1h])))'
 check "Grafana's Prometheus datasource returns the PlaceOrder latency" bash -c "$(declare -f graf nonempty); graf \"/api/datasources/proxy/uid/prometheus/api/v1/query?query=\$(python3 -c 'import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1]))' '$q')\" | nonempty"
 
 echo "-- recovery: delete the gateway pod"

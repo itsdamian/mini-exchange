@@ -6,6 +6,6 @@
 - [x] NetworkPolicy default-deny with the connections the system needs; ValidatingAdmissionPolicy that refuses a second engine
 - [x] Observability: PodMonitor, Grafana dashboard as code, alert rules with promtool unit tests; offline validation script and a CI job
 - [x] `scripts/k8s-up.sh` (one command), `k8s-seed.sh`, `k8s-load.sh`, `k8s-test.sh`, `k8s-down.sh`
-- [x] Deployed on the cluster and checked with `k8s-test.sh`: 28 checks pass (see BENCHMARKS.md phase 7)
+- [x] Deployed on the cluster and checked with `k8s-test.sh`: 27 checks pass (see BENCHMARKS.md phase 7)
 - [x] ADR 0012, README, runbook
 - Acceptance: one-command local cluster deploy; Grafana shows the latency histograms.

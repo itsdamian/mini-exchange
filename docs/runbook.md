@@ -60,7 +60,7 @@ The hermetic tests (`go test ./internal/risk ./internal/gateway`, not under `-sh
 make k8s-up        # images, cluster "mini-exchange", Argo CD, then Argo CD deploys everything (20 to 30 minutes the first time)
 make k8s-seed      # fund accounts 1..16 in Redis and the ledger (once per cluster)
 make k8s-load      # RATE=2000 DURATION=120s make k8s-load: in-cluster load Job
-make k8s-test      # 28 checks of the deployment
+make k8s-test      # 27 checks of the deployment
 make k8s-validate  # offline: overlay builds, alert unit tests, metrics exist (what CI runs)
 make k8s-down      # delete the cluster and its data
 export KUBECONFIG=$PWD/.k8s/kubeconfig   # kubectl for this cluster; your own context is never changed

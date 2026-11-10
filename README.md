@@ -140,7 +140,7 @@ Honest limits: the bot is not a realistic market simulation (fixed spread, rando
 - **One engine, enforced**: the gateway is a one-replica StatefulSet and an admission policy rejects scaling it.
 - **NetworkPolicy default-deny** with explicit rules; checked by tests from stranger pods.
 - **Alerts as code** (13 rules, promtool unit tests) and a CI job that checks the overlay builds and every metric used by the dashboard and alerts exists in the code.
-- **Checked on the cluster** (`make k8s-test`, 28 checks): all Argo CD apps Healthy, no restarts, the policies hold, the histograms have data in Prometheus and through Grafana's datasource, and a deleted gateway pod recovers from its snapshot and the log with the sequence continuing.
+- **Checked on the cluster** (`make k8s-test`, 27 checks): all Argo CD apps Healthy, no restarts, the policies hold, the histograms have data in Prometheus and through Grafana's datasource, and a deleted gateway pod recovers from its snapshot and the log with the sequence continuing.
 - **Cost**: the whole stack uses about 5 GiB of the Docker VM (measured); `k8s-up` refuses to start with less than 4.5 GB free. Do not run it next to another large cluster on a 16 GB machine.
 
 Honest limits: no Sealed Secrets (nothing hand-managed to seal; the Grafana password is a local value in git), no Alertmanager, single node and single instances, Kafka 4.3.1 in the cluster versus 3.9.0 in the tests, and the rules were unit-tested but not triggered by a real fault. The in-cluster latency numbers are not comparable to the localhost benchmarks. See [BENCHMARKS.md](BENCHMARKS.md).
