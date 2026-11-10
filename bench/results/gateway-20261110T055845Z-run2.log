@@ -1,0 +1,10 @@
+{"time":"2026-11-10T13:59:30.544457+08:00","level":"INFO","msg":"recovered","service":"gateway","from_snapshot":false,"snapshot_seq":0,"replayed_batches":0,"replayed_events":0,"last_seq":0,"book_hash":"a8c7f832281a39c5","resting_orders":0,"log_end_offset":0,"snapshot_load_ms":1,"replay_ms":0,"total_ms":9}
+{"time":"2026-11-10T13:59:30.54575+08:00","level":"WARN","msg":"no -redis given: running WITHOUT pre-trade risk, every order is admitted","service":"gateway"}
+{"time":"2026-11-10T13:59:30.549451+08:00","level":"INFO","msg":"http listening","service":"gateway","addr":":18071"}
+{"time":"2026-11-10T13:59:30.549464+08:00","level":"INFO","msg":"grpc listening","service":"gateway","addr":"[::]:50071","symbol":"LT-20261110T055845Z-2"}
+{"time":"2026-11-10T13:59:46.634877+08:00","level":"INFO","msg":"snapshot written","service":"gateway","seq":100000,"offset":75682,"orders":534}
+{"time":"2026-11-10T13:59:54.282794+08:00","level":"INFO","msg":"snapshot written","service":"gateway","seq":200000,"offset":151475,"orders":520}
+{"time":"2026-11-10T14:00:01.978908+08:00","level":"INFO","msg":"snapshot written","service":"gateway","seq":300000,"offset":227656,"orders":537}
+{"time":"2026-11-10T14:00:09.651865+08:00","level":"INFO","msg":"snapshot written","service":"gateway","seq":400000,"offset":303677,"orders":549}
+{"time":"2026-11-10T14:00:14.034783+08:00","level":"INFO","msg":"shutting down","service":"gateway"}
+{"time":"2026-11-10T14:00:14.042988+08:00","level":"INFO","msg":"snapshot written","service":"gateway","seq":456352,"offset":346616,"orders":530}

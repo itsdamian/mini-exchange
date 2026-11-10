@@ -16,12 +16,12 @@ The specification is [requirements.md](requirements.md). Significant decisions a
 | 3 | Kafka event log, snapshots, replay and recovery | done |
 | 4 | Pre-trade risk in Redis (Lua) | done |
 | 5 | Double-entry ledger in PostgreSQL, dead-letter topic, reconciliation | done |
-| 6 | Market data over WebSocket, synthetic order flow | next |
-| 7 | Kubernetes (k3d, Argo CD, Strimzi, CloudNativePG), dashboards | planned |
+| 6 | Market data over WebSocket, synthetic order flow | done |
+| 7 | Kubernetes (k3d, Argo CD, Strimzi, CloudNativePG), dashboards | next |
 | 8 | Optimization report, optional standby failover | planned |
 | 9 | Minimal UI (stretch) | planned |
 
-The engine, a gRPC gateway, the Kafka event log, Redis pre-trade risk and the PostgreSQL ledger exist today (the ledger is fed from Kafka, not from the order path). The diagram below is the **target** architecture.
+The engine, a gRPC gateway, the Kafka event log, Redis pre-trade risk the PostgreSQL ledger, a WebSocket market data feed and a synthetic order bot exist today (the ledger and the feed are fed from Kafka, not from the order path). The diagram below is the **target** architecture.
 
 ## Target architecture
 
@@ -119,6 +119,19 @@ Honest limits: Redis and the engine can disagree after a gateway crash (queued s
 
 Honest limits: with a non-zero fee the ledger can refuse a buyer who spent everything, because risk does not reserve fees (fees default to 0); deposits are not in the event log, so the recomputation trusts the ledger's deposit entries and Redis is seeded separately; the reconciliation re-reads the whole log and is not incremental; one symbol per consumer.
 
+### Market data and bot (phase 6)
+
+`cmd/marketdata` rebuilds the book from the Kafka log and serves depth and recent trades over WebSocket at `/ws` ([ADR 0011](docs/adr/0011-market-data-and-bot.md)):
+
+- **Full state per frame**: top-N asks and bids, the last trades and the engine sequence; a client that missed frames needs nothing else.
+- **Conflation**: at most one frame per client per 100 ms, built and encoded once and shared by all clients. A client that does not accept a frame within the write timeout is disconnected, never buffered; connections beyond a limit get 503.
+- **Separate process**: it only reads Kafka, so a client cannot slow the matcher by construction.
+- **Measured** (one laptop, everything on the same machine, 10k orders/s, 1,000 clients, 3 runs): no connection failures or drops, a median of 100 ms between frames, memory flat at about 185 MB. It is **not** free for the gateway: median latency was 15 µs higher (86 to 91 vs 103 to 105 µs) in all three runs and one run's p99 was 8.4 ms, which I attribute, as a hypothesis, to CPU contention on one machine. Details in [BENCHMARKS.md](BENCHMARKS.md).
+
+`cmd/bot` sends synthetic flow to the gateway: a market maker that re-quotes three levels per side around a reference price every step, plus random taker orders. The reference price comes from a recorded file (default: `data/sample-prices.csv`, which is **synthetic**, a seeded random walk, not a market recording) or, with `-feed coinbase`, from the live public Coinbase ticker. With the file and a fixed `-seed`, two runs send the same orders and the engine emits the same events (tested through the real gateway, timestamps excluded). Tests never reach the internet: a guard fails any dial to a non-loopback host.
+
+Honest limits: the bot is not a realistic market simulation (fixed spread, random takers, no inventory or risk model); marketdata replays the whole log at start; one symbol per process; the full-state frame trades bandwidth for simplicity.
+
 ## Quick start
 
 Requirements: Go (version in `go.mod`), Docker with Compose, and `golangci-lint` for `make lint`.
@@ -134,6 +147,7 @@ make bench-recovery  # replay of a 1M-event log from Kafka (needs Docker)
 make chaos         # kill -9 the engine and Kafka under load and verify (needs Docker)
 REDIS=localhost:16379 make loadtest   # the same load test with pre-trade risk (funds 16 accounts, audits conservation)
 KAFKA=localhost:9092 REDIS=localhost:16379 PG=1 make loadtest   # plus the ledger consumer, reconciled after each run
+WS=1000 KAFKA=localhost:9092 make loadtest   # plus marketdata and 1,000 WebSocket clients
 make proto         # regenerate gen/ from proto/ (needs buf and the protoc-gen-go plugins)
 
 make up            # docker compose: kafka, redis, postgres, prometheus, gateway
@@ -152,11 +166,17 @@ cmd/loadgen          open-loop gRPC load generator
 cmd/logtool          event log checks: replay and continuity, snapshot-vs-clean comparison, generator
 cmd/risktool         seed (fund) and audit the Redis balances
 cmd/ledger           ledger service (run), deposit, reconcile
+cmd/marketdata       WebSocket market data from the event log
+cmd/bot              synthetic order flow (market maker and random takers)
+cmd/wsload           WebSocket client load for the market data test
 proto/               Protobuf API (buf managed); gen/ holds the generated Go code
 internal/gateway     gRPC server, validation, idempotency
 internal/pipeline    gateway-to-engine rings, engine goroutine, dispatcher, report hub
 internal/ring        lock-free SPSC and MPSC bounded queues
 internal/eventlog    Kafka publisher, snapshots, follower, recovery (kafkatest: Docker broker for tests)
+internal/marketdata  depth and trade view from the log, WebSocket server with conflation
+internal/bot         price sources, deterministic planner and runner
+internal/nonet       test guard against external network access
 internal/ledger      double-entry ledger: postings, PostgreSQL store (goose migrations), Kafka consumer with dead-letter topic, reconciliation (pgtest: Docker PostgreSQL for tests)
 internal/risk        Redis pre-trade risk: Lua scripts, reservation, rate limit, async settlement (redistest: Docker Redis for tests)
 internal/benchenv    environment capture for benchmark results

@@ -1,0 +1,2 @@
+{"time":"2026-11-10T14:00:14.190772+08:00","level":"INFO","msg":"book rebuilt","service":"marketdata","events":0,"last_seq":0,"resting_orders":0,"ms":10}
+{"time":"2026-11-10T14:00:14.190937+08:00","level":"INFO","msg":"market data running","service":"marketdata","symbol":"LT-20261110T055845Z-3","http":":18083","depth":10,"interval":"100ms"}

@@ -101,6 +101,19 @@ services:
       postgres:
         condition: service_healthy
 
+  marketdata:
+    build:
+      context: ..
+      args:
+        CMD: marketdata
+    # WebSocket market data from the Kafka event log: ws://localhost:18083/ws
+    command: ["-kafka", "kafka:19092"]
+    ports:
+      - "${MARKETDATA_PORT:-18083}:8083"
+    depends_on:
+      kafka:
+        condition: service_healthy
+
 volumes:
   redis-data:
   gateway-data:

@@ -170,3 +170,16 @@ func (b *Book) Clone(cfg Config) *Book {
 	n.SetState(b.seq, b.maxOrderID)
 	return n
 }
+
+// Depth calls fn for the n best price levels of each side with the aggregate
+// resting quantity: asks from best to worst, then bids from best to worst. It
+// only reads the book; the caller must own the Book (it is not safe to call
+// while another goroutine applies commands or events).
+func (b *Book) Depth(n int, fn func(side Side, price, qty int64)) {
+	for i, c := len(b.asks)-1, 0; i >= 0 && c < n; i, c = i-1, c+1 {
+		fn(Sell, b.asks[i].price, b.asks[i].qty)
+	}
+	for i, c := len(b.bids)-1, 0; i >= 0 && c < n; i, c = i-1, c+1 {
+		fn(Buy, b.bids[i].price, b.bids[i].qty)
+	}
+}

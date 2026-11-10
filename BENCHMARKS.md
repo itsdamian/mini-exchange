@@ -257,3 +257,43 @@ Setup: same laptop as phase 4 (Apple M5, 10 logical CPUs), `GOMAXPROCS=4`, nativ
 - **The reconciliation detects problems**: an edited balance, a deleted settlement and an orphan settlement each produce the expected discrepancy kinds, and are gone when restored (`TestReconcileFindsCorruption`).
 - **Invariants** (entries sum to zero per asset, no negative customer balance, one settlement per trade) are enforced by the schema and re-checked by every reconciliation; the posting builder is also property tested to balance for any price, quantity and fee.
 
+## Phase 6: market data over WebSocket
+
+Setup: same laptop (Apple M5, 10 logical CPUs), `GOMAXPROCS=4` for the gateway, Kafka `apache/kafka:3.9.0` from the compose file through Docker Desktop, no Redis and no ledger, 10,000 orders/s for 30 s after a 5 s warm-up, 3 runs per row, `scripts/loadtest.sh` with `KAFKA=…` and, for the second row, `WS=1000`. The gateway, load generator, marketdata process and 1,000 WebSocket clients (`cmd/wsload`, one process) all run on this machine over loopback, so the clients compete with the gateway for CPU; that is a harsher test of "no impact" than a separate host would be. Marketdata uses the defaults: 10 levels, 50 trades, 100 ms conflation. Raw files: `bench/results/*md-off*` and `*md-ws1000*`.
+
+### 6.1 Gateway latency with and without 1,000 WebSocket clients (every run)
+
+| Setup | Run | p50 µs | p90 µs | p99 µs | p99.9 µs | max µs |
+|---|---|---|---|---|---|---|
+| Kafka log, no market data | 1 | 91 | 151 | 1,769 | 11,175 | 27,215 |
+| | 2 | 89 | 148 | 1,680 | 28,719 | 58,079 |
+| | 3 | 86 | 143 | 2,569 | 82,431 | 112,767 |
+| Kafka log, marketdata + **1,000 clients** | 1 | 105 | 239 | 8,351 | 30,015 | 59,935 |
+| | 2 | 103 | 190 | 1,548 | 40,351 | 72,703 |
+| | 3 | 103 | 214 | 2,933 | 31,183 | 60,255 |
+
+### 6.2 The clients and the process (1,000 clients, 3 runs)
+
+| Run | Connect failures | Dropped by server | Frames per client per second | Frame age p50 / p99 (ms) | Gap between frames p50 / p99 (ms) | Marketdata RSS at start / end |
+|---|---|---|---|---|---|---|
+| 1 | 0 | 0 | 8.27 | 48.8 / 72.7 | 100.0 / 107.4 | 36 MB / 186 MB |
+| 2 | 0 | 0 | 8.29 | 33.8 / 52.6 | 100.0 / 101.6 | 35 MB / 188 MB |
+| 3 | 0 | 0 | 8.27 | 31.5 / 53.5 | 100.0 / 106.3 | 38 MB / 189 MB |
+
+"Frame age" is engine event time to the client receiving the frame that contains it (same host clock). "Frames per client" is below 10 because the measurement includes the first seconds of connection and the quiet periods of the run. RSS is sampled every 2 s: it rises while the clients connect and the load starts, then stays between about 170 and 190 MB for the rest of the run.
+
+### 6.3 What these numbers say, and what they do not
+- **The 100 ms conflation works**: the median gap between frames is 100.0 ms and the p99 is 101.6 to 107.4 ms; no client got more than about one frame per 100 ms while the engine produced about 30,000 events per second.
+- **Memory is stable, not small**: about 185 MB with 1,000 clients and a busy market, flat after the clients connected. About 150 MB of that is above the idle process (36 MB), roughly 150 KB per client (goroutine, WebSocket buffers, and the Go runtime's own headroom); I did not break it down further. The hermetic test (1,000 clients, heap measured after GC while 20,000 more events arrive) saw no growth.
+- **No clients were lost or dropped**, and a client that stops reading is disconnected after the write timeout (tested with a client that never reads; `mx_md_slow_disconnects_total` was 0 in these runs, as expected, because every load-test client read).
+- **"No impact on engine latency" is not exactly what I measured.** Median gateway latency rose in all three runs, from 86 to 91 µs to 103 to 105 µs (about 15 µs, 17%), and p90 rose from 143 to 151 µs to 190 to 239 µs. The p99 was 1.5 to 8.4 ms with the clients and 1.7 to 2.6 ms without; one run with clients had p99 of 8.4 ms, the other two were within the spread of the baseline. p99.9 and max are dominated by the unexplained tail already recorded in phases 2 to 4 and are not distinguishable between the rows with three runs each. The marketdata process cannot slow the matcher by design (it only reads Kafka), so I attribute the median shift to CPU contention on one laptop (the 1,000 client goroutines and the marketdata process share the 10 cores with the gateway and the load generator, 6 of which are efficiency cores) and not to anything in the engine. That is a hypothesis; I did not run a control with the clients pinned elsewhere, and I did not run on separate machines.
+- **Frame age is 30 to 50 ms at the median** (event to client), made of the Kafka publish delay, up to one 100 ms build interval and up to one 100 ms client interval; the 50 to 70 ms p99 is lower than the sum of the two intervals because they are not aligned. It is a lag of the view, not of the engine.
+- These are single-machine runs, three each; no statistical claim.
+
+### 6.4 Correctness checks (FR-7, FR-8)
+- **Depth**: the frame's top-5 levels equal the reference book's after 5,000 random commands, trades are in order, and the consumer on real Kafka rebuilds the same depth from a log that is half there before it starts and half arriving while it runs (`TestFeedDepthMatchesTheReferenceBook`, `TestConsumerRebuildsThenFollowsTheLog`).
+- **Conflation**: a client sees at most one frame per 100 ms while tens of thousands of events are applied (`TestClientGetsStateAtOnceAndConflatedUpdates`).
+- **1,000 clients, hermetic**: all receive updates, heap is flat while a client that never reads is connected, and a client that stops reading is disconnected and not buffered (`TestThousandClientsStableMemoryAndSlowClientDropped`, `TestSlowClientIsDisconnectedNotBuffered`); the client limit answers 503.
+- **Identical event streams**: through the real gRPC gateway and engine, two runs of the bot over the same 400 prices of the price file with seed 42 produce identical event streams (timestamps excluded, they come from the wall clock), including more than 100 trades and more than 1,000 cancels; seed 43 gives a different stream (`TestSameFileAndSeedGiveIdenticalEventStreams`).
+- **Offline**: the Coinbase source is tested against a fake server, and a test asserts that dialing the real feed URL is refused before any traffic (`internal/nonet`). The price file in `data/` is synthetic, not a recording.
+

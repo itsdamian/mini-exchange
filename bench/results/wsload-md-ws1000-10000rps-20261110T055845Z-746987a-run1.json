@@ -1,0 +1,19 @@
+{
+  "clients": 1000,
+  "connect_failures": 0,
+  "dropped_by_server": 0,
+  "frame_age_us": {
+    "max": 111167,
+    "p50": 48767,
+    "p99": 72703
+  },
+  "frames": 349811,
+  "frames_per_client_per_sec": 8.27302478845946,
+  "gap_between_frames_us": {
+    "max": 129535,
+    "p50": 100031,
+    "p99": 107391
+  },
+  "measured_seconds": 42.2833255,
+  "slow_clients": 0
+}

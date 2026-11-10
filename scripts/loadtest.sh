@@ -12,6 +12,8 @@
 #        KAFKA=... REDIS=... PG=1 scripts/loadtest.sh  also run the ledger consumer into the compose PostgreSQL
 #                                                   (PG=<dsn> to use another one), then reconcile the ledger
 #                                                   with the event log and Redis after each run (needs both above)
+#        WS=1000 KAFKA=... scripts/loadtest.sh      also run marketdata and that many WebSocket clients during the load, and
+#                                                   record marketdata's memory and the frames the clients got (FR-7)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -31,14 +33,19 @@ go build -o bin/gateway ./cmd/gateway
 go build -o bin/loadgen ./cmd/loadgen
 go build -o bin/risktool ./cmd/risktool
 go build -o bin/ledger ./cmd/ledger
+go build -o bin/marketdata ./cmd/marketdata
+go build -o bin/wsload ./cmd/wsload
 
-GW_PID=""; LEDGER_PID=""
-cleanup() { [ -n "$GW_PID" ] && kill "$GW_PID" 2>/dev/null || true; [ -n "$LEDGER_PID" ] && kill "$LEDGER_PID" 2>/dev/null || true; }
+GW_PID=""; LEDGER_PID=""; MD_PID=""; RSS_PID=""
+cleanup() { [ -n "$MD_PID" ] && kill "$MD_PID" 2>/dev/null || true; [ -n "$RSS_PID" ] && kill "$RSS_PID" 2>/dev/null || true; [ -n "$GW_PID" ] && kill "$GW_PID" 2>/dev/null || true; [ -n "$LEDGER_PID" ] && kill "$LEDGER_PID" 2>/dev/null || true; }
 trap cleanup EXIT
 
 KAFKA="${KAFKA:-}"
 REDIS="${REDIS:-}"
 PG="${PG:-}"
+WS="${WS:-0}"
+MD_HTTP_PORT="${MD_HTTP_PORT:-18083}"
+[ "$WS" -gt 0 ] && { [ -n "$KAFKA" ] || { echo "WS needs KAFKA" >&2; exit 2; }; }
 PG_HTTP_PORT="${PG_HTTP_PORT:-18072}"
 if [ -n "$PG" ]; then
   [ -n "$KAFKA" ] && [ -n "$REDIS" ] || { echo "PG needs KAFKA and REDIS" >&2; exit 2; }
@@ -50,6 +57,7 @@ ACCOUNTS=16; FUND_BASE=1000000000; FUND_QUOTE=1000000000000
 LABEL="$([ -n "$KAFKA" ] && echo kafka || echo nolog)"
 [ -n "$REDIS" ] && LABEL="${LABEL}+risk"
 [ -n "$PG" ] && LABEL="${LABEL}+ledger"
+[ "$WS" -gt 0 ] && LABEL="${LABEL}+ws${WS}"
 TAG="${TAG:-$LABEL}"
 for run in $(seq 1 "$RUNS"); do
   SYMBOL="BTC-USD"; GW_ARGS=()
@@ -79,6 +87,19 @@ for run in $(seq 1 "$RUNS"); do
     ./bin/ledger run -pg "$PG" -kafka "$KAFKA" -symbol "$SYMBOL" -group "g-${SYMBOL}" -http ":${PG_HTTP_PORT}" >"$OUT/ledger-${STAMP}-run${run}.log" 2>&1 &
     LEDGER_PID=$!
   fi
+  if [ "$WS" -gt 0 ]; then
+    ./bin/marketdata -kafka "$KAFKA" -symbol "$SYMBOL" -http ":${MD_HTTP_PORT}" >"$OUT/marketdata-${STAMP}-run${run}.log" 2>&1 &
+    MD_PID=$!
+    for _ in $(seq 1 100); do curl -fsS "localhost:${MD_HTTP_PORT}/healthz" >/dev/null 2>&1 && break; sleep 0.1; done
+    RSS_FILE="$OUT/marketdata-rss-${TAG}-${RATE}rps-${STAMP}-${COMMIT}-run${run}.txt"; : >"$RSS_FILE"
+    ( while kill -0 "$MD_PID" 2>/dev/null; do echo "$(date +%s) $(ps -o rss= -p "$MD_PID" | tr -d ' ')" >>"$RSS_FILE"; sleep 2; done ) &
+    RSS_PID=$!
+    # Clients connect first and listen until the load is over (SIGINT ends the measurement).
+    ./bin/wsload -url "ws://localhost:${MD_HTTP_PORT}/ws" -clients "$WS" -duration 10m \
+      -out "$OUT/wsload-${TAG}-${RATE}rps-${STAMP}-${COMMIT}-run${run}.json" >/dev/null &
+    WS_PID=$!
+    sleep 8   # let the clients connect before the load starts
+  fi
   echo "== run ${run}/${RUNS}: ${RATE} req/s, ${DURATION} measured =="
   ./bin/loadgen -addr "localhost:${GRPC_PORT}" -symbol "$SYMBOL" -rate "$RATE" -duration "$DURATION" -warmup "$WARMUP" -conns "$CONNS" \
     -note "gateway and loadgen on the same host over loopback; event log: ${KAFKA:-none}" \
@@ -86,6 +107,12 @@ for run in $(seq 1 "$RUNS"); do
 
   curl -fsS "localhost:${HTTP_PORT}/metrics" | grep -E '^(mx_|go_gc_duration_seconds)' \
     >"$OUT/gateway-metrics-${TAG}-${RATE}rps-${STAMP}-${COMMIT}-run${run}.txt" || true
+  if [ "$WS" -gt 0 ]; then
+    curl -fsS "localhost:${MD_HTTP_PORT}/metrics" | grep -E '^(mx_md_|process_resident_memory_bytes)' \
+      >"$OUT/marketdata-metrics-${TAG}-${RATE}rps-${STAMP}-${COMMIT}-run${run}.txt" || true
+    kill -INT "$WS_PID" 2>/dev/null || true; wait "$WS_PID" 2>/dev/null || true
+    kill "$RSS_PID" "$MD_PID" 2>/dev/null || true; wait "$MD_PID" 2>/dev/null || true; MD_PID=""; RSS_PID=""
+  fi
   kill "$GW_PID"; wait "$GW_PID" 2>/dev/null || true; GW_PID=""   # SIGTERM drains the settlement queue
   if [ -n "$PG" ]; then
     # The gateway has flushed the log; give the ledger time to catch up, then compare

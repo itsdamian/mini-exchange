@@ -55,6 +55,23 @@ Reset before running against a new event log: the settlement dedup remembers the
 
 The hermetic tests (`go test ./internal/risk ./internal/gateway`, not under `-short`) run against a Redis started by Testcontainers, including stopping and restarting it.
 
+## Market data and bot
+```bash
+docker compose -f deploy/docker-compose.yml up -d --wait kafka
+go run ./cmd/gateway -kafka localhost:9092 ...                         # the engine whose log is followed
+go run ./cmd/marketdata -kafka localhost:9092 -symbol BTC-USD          # WebSocket on :8083/ws, metrics on :8083/metrics
+go run ./cmd/bot -addr localhost:50051 -seed 1 -loop                   # synthetic flow from data/sample-prices.csv
+go run ./cmd/wsload -url ws://localhost:8083/ws -clients 1000 -duration 30s
+WS=1000 KAFKA=localhost:9092 scripts/loadtest.sh                       # load test with marketdata and 1,000 clients
+```
+Any WebSocket client works: `websocat ws://localhost:8083/ws` prints one JSON snapshot per update (asks and bids as `[price, qty]`, `trades`, `seq`, `ts_ns`).
+
+Marketdata flags: `-depth`, `-trades`, `-interval` (conflation), `-write-timeout` (a client that does not accept a frame in this time is disconnected), `-max-clients` (503 beyond), `-max-orders` (size of the rebuilt book). It replays the whole log on start, so a restart takes as long as a clean recovery. If an event does not apply to the book it exits with an error rather than serve a wrong view.
+
+Metrics: `mx_md_clients`, `mx_md_clients_accepted_total`, `mx_md_clients_refused_total`, `mx_md_messages_sent_total`, `mx_md_slow_disconnects_total` (clients that could not keep up), `mx_md_frame_build_seconds`, `mx_md_frame_bytes`, `mx_md_publish_lag_seconds` (engine event to the frame containing it), `mx_md_events_applied_total`.
+
+Bot: `-feed file` (default, deterministic: same file, same `-seed`, same orders) or `-feed coinbase` (live, optional). `-loop` replays the file forever; use a new `-prefix` when restarting against a running gateway so client order ids do not repeat (a repeat returns the cached result). With risk enabled, fund the maker (`-maker`, default 1) and takers (`-taker-from` to `-taker-to`, default 2 to 9) first. The price file in `data/` is synthetic, see `data/README.md`.
+
 ## Ledger and reconciliation (PostgreSQL)
 ```bash
 docker compose -f deploy/docker-compose.yml up -d --wait kafka postgres
