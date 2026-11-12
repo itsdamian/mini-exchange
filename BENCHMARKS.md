@@ -507,3 +507,11 @@ Code with nothing to garbage-collect and nothing to wait for is stalled for up t
 
 Not done: the optional high availability of FR-9 (a standby engine on the same stream); the experiments could not show where a tail improvement would come from on this machine, so the hot-standby work was not started either. The measurements that would settle open points need a quiet or dedicated machine: the tail of rings against channels (8.4) and the host explanation (8.6).
 
+## Phase 9: minimal UI
+
+No performance target applies to the UI, and nothing here is a benchmark. What was observed:
+
+- **Size**: the production build is 228 kB of JavaScript (72 kB gzipped) and 2.8 kB of CSS.
+- **Against a live stack** (one gateway with the Kafka log, marketdata with `-gateway-metrics`, the bot at about 70 orders/s, everything on this laptop; a real browser, desktop and phone width, light and dark): the page showed the three-level book the bot quotes, the spread and mid, the recent trades and the latency tiles. The gateway's PlaceOrder handler time read p50 16 to 23 µs, p99 72 to 148 µs, p99.9 98 µs to 1.67 ms at that rate (the tail estimate moves a lot at this sample size) (estimates from histogram buckets). These are **not comparable** to the load-test latencies of the earlier phases (about 75 µs at p50 at 10,000 orders/s): that is the latency a client sees through gRPC from a loopback load generator, this is the time inside the handler at 70 orders/s.
+- **Failure**: with marketdata killed the page changed to "disconnected, reconnecting…" and kept the last book; after marketdata restarted and rebuilt its book from the log (25,799 events, 106 ms) the page was live again with the sequence continuing, without a reload.
+

@@ -18,7 +18,6 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/itsdamian/mini-exchange/internal/engine"
 	"github.com/itsdamian/mini-exchange/internal/marketdata"
@@ -41,6 +40,8 @@ func run() error {
 		interval   = flag.Duration("interval", 100*time.Millisecond, "conflation interval: at most one frame per client per interval")
 		writeTO    = flag.Duration("write-timeout", time.Second, "disconnect a client that does not accept a frame within this time")
 		maxClients = flag.Int("max-clients", 5000, "connections beyond this are refused with 503")
+		gwMetrics  = flag.String("gateway-metrics", "", "gateway /metrics URL (for example http://localhost:8080/metrics): enables GET /api/latency, the PlaceOrder latency percentiles the UI shows")
+		uiDir      = flag.String("ui-dir", "", "directory with the built UI (ui/dist) to serve at /; empty serves no UI")
 		maxOrders  = flag.Int("max-orders", 1<<20, "sizing of the rebuilt book: resting orders")
 	)
 	flag.Parse()
@@ -64,12 +65,12 @@ func run() error {
 	}
 	srv := marketdata.NewServer(c.Feed(), marketdata.ServerConfig{Interval: *interval, WriteTimeout: *writeTO, MaxClients: *maxClients, Registerer: reg})
 
-	mux := http.NewServeMux()
-	mux.Handle("/ws", srv.Handler())
-	mux.Handle("GET /metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
-	ok := func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok\n")) }
-	mux.HandleFunc("GET /healthz", ok)
-	mux.HandleFunc("GET /readyz", ok)
+	var lt *marketdata.LatencyTracker
+	if *gwMetrics != "" {
+		lt = marketdata.NewLatencyTracker(*gwMetrics, time.Second)
+		go lt.Run(ctx)
+	}
+	mux := newMux(srv, reg, lt, *uiDir)
 	httpSrv := &http.Server{Addr: *httpAddr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 
 	stopFeed := make(chan struct{})

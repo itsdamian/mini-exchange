@@ -88,6 +88,19 @@ Things to know:
 - The seed is not idempotent for Redis (`risktool fund` adds each time); the ledger deposit is. Delete and recreate the cluster to start clean.
 - Network policy: only listed connections work. A new component that needs the network needs a rule in `deploy/k8s/base/networkpolicy.yaml`.
 
+## UI
+```bash
+make ui-install && make ui-build           # needs Node 22 or newer; builds ui/dist
+go run ./cmd/gateway -kafka localhost:9092 ...                       # the engine
+go run ./cmd/marketdata -kafka localhost:9092 \
+  -gateway-metrics http://localhost:8080/metrics -ui-dir ui/dist      # feed, /api/latency and the page on :8083
+go run ./cmd/bot -addr localhost:50051 -loop                          # some flow to look at
+open http://localhost:8083/                                           # ?tick=1 shows raw ticks, default 0.01 per tick
+make ui-dev                                                           # development: Vite on :5173, proxies /ws and /api to :8083
+make ui-test                                                          # typecheck and the 34 tests
+```
+The latency panel needs `-gateway-metrics` (the gateway's `/metrics` URL); without it the panel says "latency is not enabled on the server". The marketdata process must be able to reach that URL. If the status shows "stale", the feed is connected but no frame arrived for 3 seconds (the gateway is idle: frames are sent only when something changes). "disconnected, reconnecting" means the WebSocket dropped; the page retries with backoff and the last book stays on screen. The UI is not in the Kubernetes deployment.
+
 ## Market data and bot
 ```bash
 docker compose -f deploy/docker-compose.yml up -d --wait kafka

@@ -1,4 +1,4 @@
-.PHONY: build test test-full lint proto bench bench-report bench-recovery loadtest chaos up down smoke k8s-validate k8s-up k8s-seed k8s-load k8s-test k8s-down
+.PHONY: build test test-full lint proto bench bench-report bench-recovery loadtest chaos up down smoke k8s-validate k8s-up k8s-seed k8s-load k8s-test k8s-down ui-install ui-test ui-build ui-dev
 
 build:
 	go build ./...
@@ -71,3 +71,17 @@ k8s-test:
 
 k8s-down:
 	./scripts/k8s-down.sh
+
+# The minimal UI (React + TypeScript, ui/); see docs/runbook.md.
+ui-install:
+	cd ui && npm ci
+
+ui-test:
+	cd ui && npm run typecheck && npm test
+
+ui-build:
+	cd ui && npm run build
+
+# Vite dev server with hot reload; proxies /ws and /api to a running cmd/marketdata on :8083.
+ui-dev:
+	cd ui && npm run dev

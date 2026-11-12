@@ -19,7 +19,7 @@ The specification is [requirements.md](requirements.md). Significant decisions a
 | 6 | Market data over WebSocket, synthetic order flow | done |
 | 7 | Kubernetes (k3d, Argo CD, Strimzi, CloudNativePG), dashboards | done |
 | 8 | Optimization report (the optional standby failover was not done) | done |
-| 9 | Minimal UI (stretch) | next, optional |
+| 9 | Minimal UI (React + TypeScript, stretch) | done |
 
 The engine, a gRPC gateway, the Kafka event log, Redis pre-trade risk the PostgreSQL ledger, a WebSocket market data feed and a synthetic order bot exist today (the ledger and the feed are fed from Kafka, not from the order path). The diagram below is the **target** architecture.
 
@@ -157,6 +157,18 @@ Every experiment of requirements section 5.3 is a before/after entry in [BENCHMA
 
 Not done: the optional hot standby engine (FR-9).
 
+### Minimal UI (phase 9)
+
+`ui/` is a small React + TypeScript page ([ADR 0014](docs/adr/0014-minimal-ui.md)): the order book depth with cumulative size bars and the spread, the recent trades coloured by taker side, and live gateway latency percentiles (p50, p99, p99.9, orders per second and a sparkline), with a connection status that shows live, stale or reconnecting (the last book stays on screen while it reconnects). It reads the market data WebSocket and a new `GET /api/latency` of the market data process, which scrapes the gateway's latency histogram and computes percentiles over the last seconds. Light and dark themes, works at phone width.
+
+```bash
+make ui-install && make ui-build
+./bin/marketdata -kafka localhost:9092 -gateway-metrics http://localhost:8080/metrics -ui-dir ui/dist   # then open http://localhost:8083/
+make ui-dev      # Vite with hot reload, proxying to a marketdata on :8083
+```
+
+Honest limits: the latency panel shows the PlaceOrder handler time inside the gateway, estimated from histogram buckets, not what a client sees; the UI is not part of the Kubernetes deployment; no authentication. It was checked in a real browser against a running gateway, marketdata and bot (desktop, phone width, dark theme, marketdata killed and restarted), and has 34 TypeScript tests plus Go tests for the latency tracker and the process's routing.
+
 ## Quick start
 
 Requirements: Go (version in `go.mod`), Docker with Compose, and `golangci-lint` for `make lint`.
@@ -194,6 +206,7 @@ cmd/ledger           ledger service (run), deposit, reconcile
 cmd/marketdata       WebSocket market data from the event log
 cmd/bot              synthetic order flow (market maker and random takers)
 cmd/wsload           WebSocket client load for the market data test
+ui/                  React + TypeScript page (depth, trades, latency); built with Vite
 deploy/k8s           Kustomize base and k3d overlay, alerts, dashboard; deploy/argocd, deploy/platform, deploy/k3d
 proto/               Protobuf API (buf managed); gen/ holds the generated Go code
 internal/gateway     gRPC server, validation, idempotency

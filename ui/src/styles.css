@@ -1,0 +1,76 @@
+:root {
+  --bg: #f6f7f9;
+  --panel: #ffffff;
+  --text: #161a1f;
+  --dim: #5d6773;
+  --line: #e1e5ea;
+  --ask: #c0392b;
+  --bid: #1e8e4e;
+  --ask-bar: rgba(192, 57, 43, 0.14);
+  --bid-bar: rgba(30, 142, 78, 0.14);
+  --accent: #2b6cb0;
+  --warn: #b7791f;
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #101317;
+    --panel: #181c21;
+    --text: #e6e9ed;
+    --dim: #98a2ae;
+    --line: #2a3038;
+    --ask: #ff7b6e;
+    --bid: #4cc98a;
+    --ask-bar: rgba(255, 123, 110, 0.16);
+    --bid-bar: rgba(76, 201, 138, 0.16);
+    --accent: #6cb0ff;
+    --warn: #e6b450;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+main { max-width: 1040px; margin: 0 auto; padding: 16px; }
+header { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px 16px; margin-bottom: 12px; }
+h1 { font-size: 20px; margin: 0; }
+h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--dim); margin: 0 0 8px; font-weight: 600; }
+.symbol { color: var(--accent); }
+.dim { color: var(--dim); }
+.status { margin: 0; font-variant-numeric: tabular-nums; }
+.dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--dim); margin-right: 4px; }
+.status.live .dot { background: var(--bid); }
+.status.stale .dot, .status.reconnecting .dot { background: var(--warn); }
+.grid { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 12px; align-items: start; }
+.stack { display: grid; gap: 12px; }
+@media (max-width: 720px) { .grid { grid-template-columns: 1fr; } }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; }
+table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+th { text-align: left; font-weight: 600; color: var(--dim); font-size: 12px; padding: 2px 6px; }
+td { padding: 2px 6px; }
+.num { text-align: right; }
+.ladder .level .bar { width: 28%; padding: 0; }
+.ladder .level .bar span { display: block; height: 14px; margin-left: auto; }
+.ladder .ask .price { color: var(--ask); }
+.ladder .bid .price { color: var(--bid); }
+.ladder .ask .bar span { background: var(--ask-bar); }
+.ladder .bid .bar span { background: var(--bid-bar); }
+.ladder .spread td { text-align: center; padding: 6px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); color: var(--dim); }
+.warn { color: var(--warn); }
+.trades .buy .price { color: var(--bid); }
+.trades .sell .price { color: var(--ask); }
+.tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 0 0 8px; }
+.tiles div { background: var(--bg); border-radius: 6px; padding: 6px 8px; }
+.tiles dt { font-size: 11px; color: var(--dim); }
+.tiles dd { margin: 0; font-size: 17px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.spark { width: 100%; height: 48px; display: block; }
+.spark path { stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+.spark .p99 { stroke: var(--ask); }
+.spark .p50 { stroke: var(--accent); }
+.note { font-size: 12px; margin: 6px 0 0; }
+footer { margin-top: 12px; font-size: 12px; }
+.tiles dd { white-space: nowrap; }
+@media (max-width: 480px) { .tiles { grid-template-columns: repeat(2, 1fr); } }
