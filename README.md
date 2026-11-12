@@ -161,6 +161,10 @@ Not done: the optional hot standby engine (FR-9).
 
 `ui/` is a small React + TypeScript page ([ADR 0014](docs/adr/0014-minimal-ui.md)): the order book depth with cumulative size bars and the spread, the recent trades coloured by taker side, and live gateway latency percentiles (p50, p99, p99.9, orders per second and a sparkline), with a connection status that shows live, stale or reconnecting (the last book stays on screen while it reconnects). It reads the market data WebSocket and a new `GET /api/latency` of the market data process, which scrapes the gateway's latency histogram and computes percentiles over the last seconds. Light and dark themes, works at phone width.
 
+`scripts/ui-demo.sh up` starts everything for it locally in one command (Kafka, gateway, marketdata, bot) and prints the address; `FEED=coinbase scripts/ui-demo.sh up` takes the bot's reference price from the live Coinbase ticker. All the data shown is synthetic (the bot's own orders around a seeded random-walk price); with the live feed only the reference price is real. The live feed has only been tested against a fake server: the real endpoint was blocked by a DNS filter on the development machine.
+
+By hand:
+
 ```bash
 make ui-install && make ui-build
 ./bin/marketdata -kafka localhost:9092 -gateway-metrics http://localhost:8080/metrics -ui-dir ui/dist   # then open http://localhost:8083/

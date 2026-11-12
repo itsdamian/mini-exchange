@@ -89,6 +89,14 @@ Things to know:
 - Network policy: only listed connections work. A new component that needs the network needs a rule in `deploy/k8s/base/networkpolicy.yaml`.
 
 ## UI
+One command for everything below, as local processes (Kafka from compose, gateway, marketdata, bot):
+```bash
+scripts/ui-demo.sh up        # then open http://localhost:8083/ ; scripts/ui-demo.sh down to stop
+FEED=coinbase scripts/ui-demo.sh up   # reference price from the live public Coinbase ticker (needs internet)
+```
+All the data is synthetic: the bot's own orders and trades around a reference price from a seeded random walk (`data/`). With `FEED=coinbase` only the reference price is real, the book and trades are still the bot's. The live feed was written against a fake server; **on the development machine the real endpoint was blocked by a DNS filter** (TLS error naming a landing page), so it has not run against the real feed. The script then says so and stops instead of leaving an empty page; it never turns certificate checks off.
+
+The same pieces by hand:
 ```bash
 make ui-install && make ui-build           # needs Node 22 or newer; builds ui/dist
 go run ./cmd/gateway -kafka localhost:9092 ...                       # the engine

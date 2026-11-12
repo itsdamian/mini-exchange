@@ -9,3 +9,4 @@
 .k8s/
 ui/node_modules/
 ui/dist/
+.demo/
